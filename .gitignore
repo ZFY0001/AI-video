@@ -1,0 +1,55 @@
+# 一言片场 · 忽略规则
+#
+# 用法：在项目根目录执行
+#     git init
+#     git add .
+#     git commit -m "初始提交：V2 基线"
+#
+# 注意：.env 必须忽略（里面有明文 API Key），但 **.env.example 要保留**。
+
+# ---- 密钥与本地配置（最重要）----
+.env
+*.env.bak
+.env.verify-backup
+
+# ---- 运行产物 ----
+runs/
+work/
+cache/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ---- 打包产物 ----
+# 用前导斜杠只忽略**根目录**的 build/dist：web/dist 是前端构建产物，
+# 桌面版加载的就是它，必须进仓库（否则 clone 下来要先 npm run build 才能跑）。
+/build/
+/dist/
+*.spec
+
+# ---- 随包二进制（ffmpeg/ffprobe 约 426MB，靠安装说明重建，不进版本库）----
+bin/
+
+# ---- 渲染中间产物（都是每次运行时生成的）----
+vendor/painted-template/out/
+vendor/painted-template/src/config.js
+vendor/painted-template/src/lyrics.js
+vendor/painted-template/src/scenes/yiyyan.js
+vendor/painted-template/studio.html
+
+# ---- 工具链 ----
+node_modules/
+vendor/painted-template/node_modules/
+
+# ---- 开发过程记录（含内部分析与个人路径，**不要公开**）----
+.workbuddy/
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

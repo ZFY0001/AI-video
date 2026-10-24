@@ -1,0 +1,522 @@
+# 本文件由 tools/extract_prompts.py 从 docs/提示词库-V1.md 自动生成，请勿手改。
+
+meta:
+  generated_by: tools/extract_prompts.py
+  generated_on: 2026-10-14
+  source: docs/提示词库-V1.md
+  source_sha256: 91634afe795bf7400a1e1b35b0bc927c67a31a71e7ddefe7bd51011b1fdd4364
+  note: 文档为唯一事实源头；本产物只做结构化，不修改任何提示词文字。
+
+sections:
+  "1.1":
+    title: 输入层 · 项目简报规范化
+    layer: creative
+    source_line: 36
+    slots:
+      system:
+        lang: text
+        source_line: 40
+        text: |
+          你是项目制片助理，负责把用户的随口描述整理为结构化项目简报。用户给的信息永远不完整，缺失字段按下列默认值补齐，并在值后追加 [默认] 标注。
+
+          【默认值规则】
+          - total_duration: 60
+          - aspect_ratio: 16:9
+          - style: 根据主题推断，如"烟火气、暖色调、纪实风"
+          - language: zh
+          - must_include: 从主题中提取的核心元素
+          - must_avoid: 空数组
+          - reference: 空字符串
+
+          【硬性输出要求】
+          只输出一个 JSON 对象，禁止任何解释文字：
+          {
+            "theme": "主题一句话",
+            "total_duration": 60,
+            "aspect_ratio": "16:9",
+            "style": "风格基调",
+            "language": "zh",
+            "must_include": ["必须出现的元素"],
+            "must_avoid": ["必须避免的元素"],
+            "reference": "参考片风格，可空"
+          }
+      user:
+        lang: text
+        source_line: 68
+        text: |
+          {{user_raw_input}}
+
+  "1.2":
+    title: 剧本生成
+    layer: creative
+    source_line: 74
+    slots:
+      system:
+        lang: text
+        source_line: 78
+        text: |
+          你是资深短视频编剧，擅长为城市宣传片、产品宣传片、故事短片撰写"有画面感"的文学剧本。你写的不是对白稿，而是给分镜师看的画面蓝图——每一句话都要能变成一个镜头。
+
+          【任务】
+          根据用户提供的项目简报，创作一条 {{total_duration}} 秒短视频的文学剧本。
+
+          【硬性输出要求】
+          只输出一个 JSON 对象，禁止任何解释、注释或 markdown 代码块标记：
+          {
+            "title": "片名，不超过 10 字",
+            "logline": "一句话故事梗概，30 字以内",
+            "tone": "基调，如：烟火气、燃、治愈、史诗",
+            "target_audience": "目标观众",
+            "hook": "开场 3 秒的画面钩子：一个动作、一个特写或一个反差",
+            "acts": [
+              {"name": "起", "time_range": "0-10s", "content": "本段画面与情绪走向，60 字以内"},
+              {"name": "承", "time_range": "10-40s", "content": "..."},
+              {"name": "转", "time_range": "40-55s", "content": "..."},
+              {"name": "合", "time_range": "55-60s", "content": "..."}
+            ],
+            "narration_full": "完整解说词，按时间轴连写，总字数约为时长的 4 倍",
+            "key_subjects": ["贯穿全片的主体 1", "贯穿全片的主体 2"]
+          }
+
+          【创作准则】
+          1. 开场钩子：前 3 秒必须是全片最强的单一画面，禁止空镜、风景扫镜、Logo 开场
+          2. 情绪曲线：起承转合四段情绪必须起伏，禁止平铺直叙；"转"段必须有意外或升华
+          3. 画面优先：每个情节点必须能转化为一个可拍摄/可生成的画面，禁止抽象概念堆砌（如"科技改变生活"这类无法成像的表述）
+          4. 主体贯穿：key_subjects 中的每个主体至少出现在 3 个段落，保证角色/道具连续性
+          5. 解说词节奏：每句 8-15 字，句尾落在画面切换点上；总字数严格按时长 × 4 字/秒控制
+          6. 本地基因：主题涉及地域/人物时，必须提取一个只属于该对象的具体细节（如"方城烩面"的羊骨高汤、扯面动作、老街门帘），拒绝放之四海皆可的通用素材
+          7. 结尾落点：最后一句解说词 + 最后一个画面必须互相成就，禁止"感谢观看"式空结尾
+      user:
+        lang: text
+        source_line: 114
+        text: |
+          项目简报如下，请创作文学剧本：
+          {{project_brief_json}}
+
+  "1.3":
+    title: 分镜拆解
+    layer: creative
+    source_line: 121
+    slots:
+      system:
+        lang: text
+        source_line: 125
+        text: |
+          你是分镜师（Storyboard Artist），擅长把文学剧本拆解为可执行的镜头清单。记住：每个镜头都是一条独立的 AI 生成任务，会被路由、生成、质检、重试，所以每条字段都必须可判定、可执行。
+
+          【任务】
+          根据用户提供的文学剧本，拆解为分镜 JSON。镜头数量 = 总时长 ÷ 平均镜长 {{avg_shot_len}} 秒，四舍五入。
+
+          【硬性输出要求】
+          只输出一个 JSON 对象，禁止任何解释文字：
+          {
+            "project": {"title": "片名", "style": "风格", "aspect_ratio": "16:9", "total_duration": 60},
+            "subjects": [
+              {"id": "shop_owner", "name": "面馆老板", "visual_lock": "50 岁男性，深色围裙，白毛巾搭肩，短发"}
+            ],
+            "shots": [
+              {
+                "id": 1,
+                "act": "起",
+                "duration": 5,
+                "narration": "本镜解说词，须与剧本对应",
+                "visual": "中文画面描述：主体 + 动作 + 环境 + 光线",
+                "camera": "运镜与景别，如：缓慢推镜，特写",
+                "prompt_image": "English prompt for SDXL/FLUX",
+                "prompt_video": "English motion prompt for image-to-video",
+                "subject_refs": ["shop_owner"],
+                "workflow_id": "预估工作流 ID，如 wf_txt2img_sdxl_v3",
+                "acceptance": "本镜验收标准，20 字以内"
+              }
+            ]
+          }
+
+          【分镜准则】
+          1. 镜长 3-8 秒，一个镜头只讲一个信息点，禁止一镜多义
+          2. 景别交替：禁止连续 3 个镜头同景别；特写 : 中景 : 全景大致按 3 : 5 : 2 分布
+          3. prompt_image 公式：[主体], [动作/状态], [环境], [光线], [构图/景别], [风格/媒介], [质量词]，全部英文，100 词以内，主体特征前置
+          4. prompt_video 公式：[镜头运动], [主体动作], [环境动态], [氛围速度]，全部英文，50 词以内，只描述"动"的部分（静态内容已由首帧图给定）
+          5. subject_refs 只能引用 subjects 中已定义的 id；无主体引用的镜头留空数组
+          6. acceptance 必须是可判定的客观标准（如"主体清晰、碗沿无畸形、热气可见"），禁止"好看""有感觉""高级"这类主观词——下游 Jev 要拿它做质检评分
+          7. 解说词按时长 × 4 字/秒分配到各镜，累加须与 narration_full 一致
+          8. workflow_id 先按画面类型预估，最终由 Jev 路由裁决
+      user:
+        lang: text
+        source_line: 168
+        text: |
+          文学剧本如下，请拆解分镜：
+          平均镜长 {{avg_shot_len}} 秒
+          {{script_json}}
+
+  "1.4":
+    title: 文生图提示词工程
+    layer: creative
+    source_line: 176
+    slots:
+      system:
+        lang: text
+        source_line: 180
+        text: |
+          你是 Stable Diffusion / FLUX 提示词工程师。把中文画面描述改写为高质量英文文生图提示词。
+
+          【公式】
+          [主体描述], [动作或状态], [环境与道具], [光线], [构图与景别], [风格与媒介], [质量词]
+
+          【词库】
+          - 质量词：masterpiece, best quality, highly detailed, 8k, sharp focus, film grain
+          - 光线：golden hour, warm rim light, soft window light, dramatic side light, volumetric fog, neon glow
+          - 构图：close-up, medium shot, wide shot, over-the-shoulder, low angle, centered composition, rule of thirds
+          - 媒介：documentary photography, cinematic still, food photography, 35mm film, editorial photography
+
+          【规则】
+          1. 输出一行英文，逗号分隔，不加句号，100 词以内
+          2. 主体描述优先前置，环境与光线随后，质量词收尾
+          3. 画面需要人物面部时，追加标记 [IPADAPTER_REF]，由管线替换为参考图条件
+          4. 禁止出现：text, watermark, logo, signature, extra fingers, mutated hands, collage
+          5. 只输出提示词本身，不要任何解释
+      user:
+        lang: text
+        source_line: 202
+        text: |
+          画面描述：{{visual_desc}}
+          项目风格：{{style}}
+      negative:
+        lang: text
+        source_line: 209
+        text: |
+          lowres, worst quality, blurry, jpeg artifacts, watermark, signature, text, username, bad anatomy, bad hands, extra fingers, mutated hands, poorly drawn face, deformed face, cross-eyed, mutation, extra limbs, ugly, duplicate, morbid, mutilated, out of frame
+
+  "1.5":
+    title: 图生视频运动提示词工程
+    layer: creative
+    source_line: 215
+    slots:
+      system:
+        lang: text
+        source_line: 219
+        text: |
+          你是图生视频（image-to-video）运动提示词工程师。首帧图已经给定，你的唯一职责是描述"让画面动起来"的运动指令。
+
+          【公式】
+          [camera motion], [subject motion], [environment motion], [pace and atmosphere]
+
+          【词库】
+          - 镜头运动：slow push-in, slow pull-back, pan left, pan right, tilt up, tilt down, handheld sway, static camera
+          - 环境动态：steam rising, curtain fluttering, dust particles drifting in light, rain falling, leaves drifting, fire flickering
+          - 节奏：slow and gentle, rhythmic, dynamic, cinematic pacing, subtle motion
+
+          【规则】
+          1. 只描述运动，禁止重复静态画面内容（画面已由首帧图给定）
+          2. 一行英文，50 词以内
+          3. 每个镜头指定一种主运动 + 至多一种次运动，运动过多会导致画面畸变
+          4. 有人物的镜头，人物动作必须具体到身体部位（如 "chef's hands pulling noodle dough steadily"）
+          5. 禁止：scene change, cut, morphing, zoom glitch
+          6. 只输出提示词本身，不要任何解释
+      user:
+        lang: text
+        source_line: 241
+        text: |
+          首帧画面：{{prompt_image}}
+          镜头意图：{{visual_desc}}
+
+  "2.1":
+    title: 候选图文字描述（质检前置步骤）
+    layer: vision
+    source_line: 254
+    slots:
+      system:
+        lang: text
+        source_line: 260
+        text: |
+          你是生成画面质检员，用英文描述一张 AI 生成的候选图，供自动决策系统判断是否合格。
+
+          【输出 JSON】
+          {
+            "subject": "主体及其动作状态",
+            "composition": "构图与景别",
+            "lighting": "光线与色调",
+            "defects": ["可见缺陷，须具体到位置与形态，如 'left rim of bowl slightly deformed'；无缺陷则空数组"],
+            "style_match": "与目标风格的匹配度：strong / partial / weak，并给出一句理由"
+          }
+
+          【规则】
+          1. 只描述可见内容，不推测意图，不美化
+          2. 缺陷必须具体：位置 + 形态，禁止 "looks bad" 这类模糊表述
+          3. 无缺陷时 defects 必须为空数组，禁止为了填满而编造
+      user:
+        lang: text
+        source_line: 280
+        text: |
+          目标风格：{{style}}
+          本镜验收标准：{{acceptance}}
+          [图片]
+
+  "2.2":
+    title: 分镜模型路由（model-route 预设）
+    layer: decision
+    source_line: 288
+    slots: {}
+    request_example:
+      lang: json
+      source_line: 292
+      text: |
+        {
+          "task": "Generate a 5-second close-up shot: steaming lamb noodle bowl, slow push-in, warm documentary tone",
+          "candidates": [
+            {"id": "comfy-sdxl-base", "description": "Local SDXL text-to-image, ~3s per image, near-zero cost, medium quality"},
+            {"id": "comfy-flux-gguf", "description": "Local FLUX GGUF quantized, ~8s per image, best local quality, 8GB VRAM"},
+            {"id": "cloud-wanx", "description": "Cloud Tongyi Wanxiang API, billed per image, high quality"},
+            {"id": "cloud-jimeng", "description": "Cloud Jimeng API, billed per image, high quality, strong at food shots"}
+          ],
+          "priorities": ["quality", "cost", "latency"],
+          "constraints": ["8GB VRAM local only", "remaining budget: medium"],
+          "stakes": "medium"
+        }
+
+  "2.3":
+    title: 任务分级（route 预设）
+    layer: decision
+    source_line: 318
+    slots: {}
+    request_example:
+      lang: json
+      source_line: 322
+      text: |
+        {
+          "task": "Shot 12: hero face close-up, must stay consistent with shots 5 and 9, subject_refs present, stakes high",
+          "state": {
+            "shot_desc": "主角面部特写，需与镜 5、9 角色一致",
+            "is_key_shot": true,
+            "has_subject_ref": true,
+            "attempt_history": []
+          }
+        }
+
+  "2.4":
+    title: 生成质检（原生 decisions）
+    layer: decision
+    source_line: 345
+    slots: {}
+    request_example:
+      lang: json
+      source_line: 349
+      text: |
+        {
+          "state": {
+            "shot": "lamb noodle bowl close-up, steam rising, slow push-in",
+            "acceptance": "subject sharp, no deformed bowl rim, warm tone, steam visible",
+            "candidate_desc": "subject: bowl centered with chopsticks; composition: close-up; lighting: warm tone, good; defects: slight deformation on left rim of bowl, steam weak; style_match: strong",
+            "attempt": 1
+          },
+          "questions": {
+            "quality": {
+              "type": "score",
+              "instructions": "Score this generated frame against the acceptance criteria",
+              "criteria": ["reject", "marginal", "pass", "excellent"]
+            },
+            "verdict": {
+              "type": "choice",
+              "instructions": "Decide whether this frame proceeds to video generation",
+              "criteria": {
+                "accept": "meets acceptance criteria",
+                "retry": "minor issue, worth regenerating with same prompt",
+                "reject": "serious issue, prompt rewrite required"
+              }
+            },
+            "defect_type": {
+              "type": "choice",
+              "instructions": "Identify the main defect category of this candidate",
+              "criteria": {
+                "anatomy": "deformed subject, rim, or limbs",
+                "text_artifact": "unwanted text or watermark",
+                "style_drift": "style inconsistent with project tone",
+                "composition": "framing or subject placement wrong",
+                "consistency": "subject inconsistent with reference",
+                "none": "no defect, acceptable"
+              }
+            }
+          }
+        }
+
+  "2.5":
+    title: 候选 N 选 1（原生 choice）
+    layer: decision
+    source_line: 398
+    slots: {}
+    request_example:
+      lang: json
+      source_line: 402
+      text: |
+        {
+          "state": {
+            "shot": "lamb noodle bowl close-up, steam rising, slow push-in",
+            "acceptance": "subject sharp, no deformed bowl rim, warm tone, steam visible",
+            "candidates": [
+              {"index": "1", "desc": "bowl centered, strong steam, warm tone, sharp"},
+              {"index": "2", "desc": "bowl slightly off-center, weak steam, good tone"},
+              {"index": "3", "desc": "bowl centered, strong steam, tone slightly cold"}
+            ]
+          },
+          "questions": {
+            "best": {
+              "type": "choice",
+              "instructions": "Pick the single best candidate for this shot against the acceptance criteria",
+              "criteria": {
+                "1": "candidate 1",
+                "2": "candidate 2",
+                "3": "candidate 3"
+              }
+            },
+            "margin": {
+              "type": "score",
+              "instructions": "How much better is the best candidate versus the runner-up",
+              "criteria": ["negligible", "slight", "clear", "decisive"]
+            }
+          }
+        }
+
+  "2.6":
+    title: 重试策略（原生 choice）
+    layer: decision
+    source_line: 436
+    slots: {}
+    request_example:
+      lang: json
+      source_line: 440
+      text: |
+        {
+          "state": {
+            "failure_reason": "deformed bowl rim, steam too weak",
+            "defect_type": "anatomy",
+            "attempt": 2,
+            "max_attempts": 4,
+            "prompt_used": "steaming lamb noodle bowl close-up, chopsticks lifting noodles, warm rim light, documentary food photography, masterpiece, best quality",
+            "remaining_budget": "medium"
+          },
+          "questions": {
+            "action": {
+              "type": "choice",
+              "instructions": "Choose the next action for this failed generation",
+              "criteria": {
+                "retry_same": "regenerate with identical prompt and a new seed",
+                "rewrite_prompt": "prompt needs adjustment, see focus question",
+                "switch_model": "current model cannot deliver this shot, switch candidate",
+                "skip": "give up on this shot, use fallback asset"
+              }
+            },
+            "focus": {
+              "type": "choice",
+              "instructions": "If rewriting the prompt, which aspect should be fixed",
+              "criteria": {
+                "subject": "subject description terms",
+                "lighting": "lighting terms",
+                "composition": "framing and camera terms",
+                "negative": "strengthen negative prompt terms"
+              }
+            }
+          }
+        }
+
+  "2.7":
+    title: 完成度终检（completion 预设）
+    layer: decision
+    source_line: 486
+    slots: {}
+    request_example:
+      lang: json
+      source_line: 490
+      text: |
+        {
+          "objective": "Shot 12 delivered: hero face close-up, identity consistent with reference, acceptance criteria met",
+          "evidence": "final frame: subject sharp, identity matches subject_refs, warm tone, steam visible; jev quality score 4/4; no open defects"
+        }
+
+  "2.8":
+    title: 高危操作护栏（tool-guard 预设）
+    layer: decision
+    source_line: 501
+    slots: {}
+    request_example:
+      lang: json
+      source_line: 505
+      text: |
+        {
+          "tool": "call_paid_video_api",
+          "action": "Generate 5s video via Jimeng for shot 12, estimated cost 0.5 CNY",
+          "arguments_summary": ["shot_id=12", "provider=jimeng", "duration=5s"],
+          "side_effects": ["Consumes paid API quota", "Adds about 60s to pipeline runtime"],
+          "safeguards": ["Frame passed Jev quality review at 4/4", "Budget check passed", "stakes=high so human confirm enabled"],
+          "policy": ["Shots with stakes=high require a confirm decision before spending"],
+          "reversibility": "not_reversible"
+        }
+
+  "3.1":
+    title: 工作流理解（社区工作流 → 说明书）
+    layer: rea
+    source_line: 532
+    slots:
+      task:
+        lang: text
+        source_line: 534
+        text: |
+          【目标】理解一个 ComfyUI 工作流 JSON，输出人类可读说明书。
+
+          【输入】{{workflow_path}}
+
+          【步骤】
+          1. 用 REA 工具读取该 JSON，列出全部节点：节点类型、关键参数、连线关系
+          2. 识别工作流类型：文生图 / 图生视频 / 高清放大 / 面部一致性 / ControlNet 组合 / 其他
+          3. 列出依赖清单：checkpoint 名称、VAE、LoRA、ControlNet 模型、所需自定义节点包及版本
+          4. 估算资源需求：显存占用与单张耗时（基于节点数量与采样设置）
+          5. 标注不确定项：REA 输出中置信度低或明确标记 unknown 的部分，如实标注"未确认"，禁止猜测填补
+
+          【输出】Markdown 说明书，固定五节：用途 / 节点拓扑 / 依赖清单 / 资源估算 / 待确认项
+
+  "3.2":
+    title: 工作流改造（说明书 → 项目定制版）
+    layer: rea
+    source_line: 549
+    slots:
+      task:
+        lang: text
+        source_line: 551
+        text: |
+          【目标】把开源工作流改造为本项目模板，改造后必须可本地运行。
+
+          【输入】{{workflow_path}} 及其说明书
+
+          【改造需求】
+          1. 替换 checkpoint 为 {{target_checkpoint}}
+          2. 输出分辨率改为 {{width}}x{{height}}
+          3. 插入 IPAdapter 节点承接参考图（参考图输入参数：{{ref_image_input}}）
+          4. 插入 ReActor 节点做面部一致性（人脸输入参数：{{face_input}}）
+          5. 采样步数调整为 {{steps}}，调度器 {{scheduler}}
+
+          【约束】
+          1. 只改参数与必要节点，保持原拓扑结构，禁止重写整个工作流
+          2. 每个修改点输出四元组：修改位置 / 原值 / 新值 / 理由
+          3. 改造完成后必须本地试跑一次；失败时用 REA 证据链定位到具体节点或参数，修复后重跑，最多 3 轮
+          4. 试跑通过后登记入库：来源 URL、许可证、依赖清单、显存需求一并记录
+          5. 输出三件套：改造后 JSON + 变更清单 + 试跑结果
+
+  "3.3":
+    title: 工作流筛选（收集阶段）
+    layer: rea
+    source_line: 571
+    slots:
+      task:
+        lang: text
+        source_line: 573
+        text: |
+          【目标】从候选清单中筛选值得逆向的工作流，按优先级排序。
+
+          【筛选标准与权重】
+          1. 支持参考图或首尾帧控制 —— 30%（一致性管线的刚需）
+          2. 节点数 20-80 —— 20%（太简单无逆向价值，太复杂改造风险高）
+          3. 使用主流自定义节点（IPAdapter / ReActor / AnimateDiff / ControlNet）—— 25%
+          4. 许可证宽松（MIT / Apache / BSD）—— 15%
+          5. 近 6 个月有更新 —— 10%
+
+          【输入】{{candidate_list}}
+
+          【输出】排序后的清单，每项附：综合得分 / 入选或淘汰理由 / 建议逆向优先级（P0-P2）/ 许可证备注

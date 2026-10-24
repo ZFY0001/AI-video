@@ -1,0 +1,71 @@
+{
+  "_meta": {
+    "title": "一言片场 · 文生图工作流（速度优先）",
+    "note": "ComfyUI API 格式。本机实测配置：ComfyUI 0.40.0 + SD 1.5 + RTX 4060 Laptop 8GB。速度优先：640x384 + 14 步，实测约 10-20 秒/张，画质足够成片。要更高画质把 steps 改 24、尺寸改 768x512。",
+    "workflow_id": "txt2img",
+    "target_checkpoint": "v1-5-pruned-emaonly.safetensors",
+    "perf": "8GB 显存 speed-first"
+  },
+  "1": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {
+      "ckpt_name": "v1-5-pruned-emaonly.safetensors"
+    },
+    "_note": "模型名必须与 models/checkpoints 里的文件名完全一致"
+  },
+  "2": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "a cinematic photograph, warm documentary tone, masterpiece, best quality",
+      "clip": ["1", 1]
+    },
+    "_note": "正向提示词，管线会用 shot.prompt_image 覆盖 text"
+  },
+  "3": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "lowres, worst quality, blurry, watermark, text, signature, bad anatomy, bad hands, extra fingers, deformed face, ugly, duplicate",
+      "clip": ["1", 1]
+    },
+    "_note": "负向提示词，管线按关键词识别并保持原样，不会被镜头提示词覆盖"
+  },
+  "4": {
+    "class_type": "EmptyLatentImage",
+    "inputs": {
+      "width": 512,
+      "height": 320,
+      "batch_size": 1
+    },
+    "_note": "这里的值只作兜底。管线会按画幅与 GEN_MAX_EDGE（默认长边 640）改写：16:9→640x360，9:16→360x640，1:1→640x640。千万不要直接写 1920x1080——8GB 显存下会跑几分钟且可能卡在 VAE 解码。成片由 FFmpeg 放大到 1080p"
+  },
+  "5": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": 0,
+      "steps": 8,
+      "cfg": 7.5,
+      "sampler_name": "euler",
+      "scheduler": "normal",
+      "denoise": 1.0,
+      "model": ["1", 0],
+      "positive": ["2", 0],
+      "negative": ["3", 0],
+      "latent_image": ["4", 0]
+    },
+    "_note": "euler+normal 在本机实测远快于 dpmpp_sde（后者单步可达 280 秒）。8 步对 SD1.5 足够成片，cfg 7.5 补回步数减少带来的质量损失"
+  },
+  "6": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": ["5", 0],
+      "vae": ["1", 2]
+    }
+  },
+  "7": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "yiyan",
+      "images": ["6", 0]
+    }
+  }
+}

@@ -1,0 +1,24 @@
+# 一言片场 · 运行依赖
+# 安装：pip install -r requirements.txt
+#
+# 说明：
+# 核心管线只用标准库 + Pillow + PyYAML，刻意不引入重量级依赖，
+# 保证在 Windows 上安装快、EXE 体积小。
+# FFmpeg 是外部程序，不是 pip 包：需单独安装并加入 PATH，
+# 或把 ffmpeg.exe 放到项目根目录的 bin/ 下（打包时会随 EXE 一起带上）。
+
+Pillow>=10.0.0
+PyYAML>=6.0
+
+# Web 界面（server/ + web/）。命令行（yiyan.py）不需要这三项。
+# 启动：python -m server，或双击 启动Web版.bat
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+
+# 桌面客户端外壳（desktop.py）：把 web/dist 装进原生窗口，用系统 WebView2 渲染。
+# 必须有，否则 启动客户端.bat 会在启动时报缺依赖。
+pywebview>=5.0
+
+# 仅打包时需要（pip install pyinstaller 后运行 python build_web.py）
+# pyinstaller>=6.0
