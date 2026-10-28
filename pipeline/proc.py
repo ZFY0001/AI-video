@@ -41,9 +41,22 @@ def hidden_kwargs() -> dict[str, Any]:
 
 
 def run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
-    """`subprocess.run` 的隐藏窗口版本。其余参数原样透传。"""
-    kwargs.setdefault("capture_output", True)
-    kwargs.setdefault("text", True)
-    kwargs.setdefault("encoding", "utf-8")
-    kwargs.setdefault("errors", "replace")
-    return subprocess.run(cmd, **hidden_kwargs(), **kwargs)
+    """`subprocess.run` 的隐藏窗口版本。其余参数原样透传。
+
+    **合并而不是双重展开**：调用方可能自己已经传了 `creationflags`
+    （比如 taskkill 这类要显式指定标志的地方）。原来的写法
+    `subprocess.run(cmd, **hidden_kwargs(), **kwargs)` 在两边都含同名字段时
+    会直接炸（实测报 `KeyError: 'creationflags'`，不是 TypeError，很容易误判）。
+    这里让**调用方的值覆盖默认值**，语义更合理：谁显式指定就听谁的。
+    """
+    merged: dict[str, Any] = dict(hidden_kwargs())
+    merged.update(kwargs)
+    merged.setdefault("capture_output", True)
+    merged.setdefault("text", True)
+    # **只在文本模式下设 encoding**：subprocess 里只要给了 encoding（哪怕 text=False），
+    # stdout 就会被解码成 str。beats.decode_pcm 要的是原始 PCM 字节流，
+    # 之前被这行悄悄转成了 str，报「bytes-like object required」。
+    if merged.get("text") or merged.get("universal_newlines"):
+        merged.setdefault("encoding", "utf-8")
+        merged.setdefault("errors", "replace")
+    return subprocess.run(cmd, **merged)
