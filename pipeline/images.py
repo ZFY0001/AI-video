@@ -316,6 +316,8 @@ class CloudImageProvider:
         "3:4": "864x1152",
     }
 
+    #: 用哪家：zhipu / minimax。接口路径与响应结构不同，generate() 里分支
+    provider: str = "zhipu"
     base_url: str = ""
     api_key: str = ""
     model: str = "cogview-4"
@@ -323,17 +325,21 @@ class CloudImageProvider:
 
     def available(self) -> tuple[bool, str]:
         if not self.base_url or not self.api_key:
-            # 报真实存在的配置项（VIDEO_API_*），别提根本不存在的 CLOUD_IMAGE_*
-            return False, "未配置云端出图端点（VIDEO_API_BASE_URL / VIDEO_API_KEY）"
-        return True, f"智谱 {self.model}（云端出图，中文提示词可直接用）"
+            return False, f"未配置 {self.provider} 的端点与 Key"
+        label = {"minimax": "MiniMax", "zhipu": "智谱"}.get(self.provider, self.provider)
+        return True, f"{label} {self.model}（云端出图）"
 
     def generate(self, shot: Shot, brief: ProjectBrief, out_path: Path, seed: int) -> Path:
-        # 允许同一镜重试时换种子：CogView 不接受 seed，所以在 prompt 尾部
-        # 加一个无意义的变化词没有意义（会污染画面描述），这里保持 prompt 原样。
         prompt = (shot.prompt_image or shot.visual or "").strip()
         if not prompt:
             raise ImageError("镜头没有可用的画面描述")
         aspect = str(getattr(brief, "aspect_ratio", "") or "16:9")
+        if self.provider == "minimax":
+            return self._minimax(prompt, aspect, out_path)
+        return self._zhipu(prompt, aspect, out_path)
+
+    def _zhipu(self, prompt: str, aspect: str, out_path: Path) -> Path:
+        """智谱 CogView：同步接口，data[0].url。"""
         size = self.SIZE_BY_ASPECT.get(aspect, "1440x720")
 
         body = {"model": self.model, "prompt": prompt, "size": size}
@@ -364,12 +370,59 @@ class CloudImageProvider:
         if not url:
             raise ImageError("云端出图未返回图片地址：" + json.dumps(data, ensure_ascii=False)[:200])
 
+        self._download(url, out_path)
+        return out_path
+
+    def _minimax(self, prompt: str, aspect: str, out_path: Path) -> Path:
+        """MiniMax image-01：同步接口，data.image_urls[]（OSS 临时链接，需立刻下载）。
+
+        与智谱的差异：分辨率用 `aspect_ratio`（"16:9"）而不是 `size`（"1440x720"），
+        返回的是数组而不是单对象。
+        """
+        body = {
+            "model": self.model or "image-01",
+            "prompt": prompt,
+            "aspect_ratio": aspect if aspect in ("1:1", "16:9", "4:3", "3:2", "2:3", "3:4", "9:16") else "16:9",
+            "response_format": "url",
+        }
+        url = self.base_url.rstrip("/") + "/v1/image_generation"
+        data: dict = {}
+        for attempt in range(4):
+            req = urllib.request.Request(
+                url, data=json.dumps(body).encode(), method="POST",
+                headers={"Authorization": "Bearer " + self.api_key, "Content-Type": "application/json"},
+            )
+            try:
+                with open_url(req, timeout=180) as r:
+                    data = json.loads(r.read() or b"{}")
+                break
+            except urllib.error.HTTPError as exc:
+                if exc.code == 429 and attempt < 3:
+                    time.sleep(8 * (attempt + 1))
+                    continue
+                raise ImageError("云端出图失败：" + describe_net_error(url, exc)) from exc
+            except Exception as exc:  # noqa: BLE001
+                raise ImageError("云端出图失败：" + describe_net_error(url, exc)) from exc
+
+        base_resp = data.get("base_resp") or {}
+        if base_resp.get("status_code") not in (0, "0", None):
+            raise ImageError(f"MiniMax 出图失败：{base_resp.get('status_msg') or data}")
+        urls = (data.get("data") or {}).get("image_urls") or []
+        if not urls:
+            raise ImageError("MiniMax 未返回图片地址：" + json.dumps(data, ensure_ascii=False)[:200])
+        self._download(str(urls[0]), out_path)
+        time.sleep(1)
+        return out_path
+
+    def _download(self, url: str, out_path: Path) -> None:
+        """下载到本地。云端给的 URL 都有有效期（MiniMax 是 OSS 临时链接），
+        所以必须立刻落盘，绝不能存链接。"""
         try:
-            with open_url(urllib.request.Request(url), timeout=120) as r:
+            with open_url(urllib.request.Request(url), timeout=180) as r:
+                out_path.parent.mkdir(parents=True, exist_ok=True)
                 out_path.write_bytes(r.read())
         except Exception as exc:  # noqa: BLE001
             raise ImageError("云端图片下载失败：" + describe_net_error(url, exc)) from exc
-        return out_path
 
 
 # ------------------------------------------------------------------ 选择
@@ -393,8 +446,18 @@ def build_provider_chain(settings, workflow_dir: Path,
         (i for i in provider_status(settings, workflow_dir, fresh=require_real)
          if i["provider"] == "comfy"), None)
     comfy_ok = bool(comfy_status and comfy_status["available"] == "是")
-    cloud = CloudImageProvider(base_url=settings.get("VIDEO_API_BASE_URL"),
-                               api_key=settings.get("VIDEO_API_KEY"))
+    # 按 model_registry 的配置决定「用哪家、哪个模型」。找不到就回落默认，
+    # 不让一个拼错的模型名把整条出图链路带崩。
+    from . import model_registry
+
+    img_provider, img_model, _img_meta = model_registry.resolve(settings, "image")
+    prov_meta = model_registry.get_provider(img_provider) or {}
+    key_name = str(prov_meta.get("key_env") or "VIDEO_API_KEY")
+    img_key = str(settings.get(key_name) or settings.get("VIDEO_API_KEY") or "")
+    img_base = str(settings.get(img_provider.upper() + "_BASE_URL")
+                   or prov_meta.get("base_url") or settings.get("VIDEO_API_BASE_URL") or "")
+    cloud = CloudImageProvider(provider=img_provider, base_url=img_base,
+                               api_key=img_key, model=img_model)
     cloud_ok = cloud.available()[0]
 
     if require_real:
@@ -444,7 +507,15 @@ def provider_status(settings, workflow_dir: Path, fresh: bool = False) -> list[d
 
     comfy = ComfyUIProvider(base_url=settings.get("COMFYUI_BASE_URL"), workflow_dir=workflow_dir)
     offline = OfflineFrameProvider()
-    cloud = CloudImageProvider(base_url=settings.get("VIDEO_API_BASE_URL"), api_key=settings.get("VIDEO_API_KEY"))
+    # 必须和 build_provider_chain 用同一套解析，否则体检显示"智谱"、
+    # 实际出图走 MiniMax——用户看到的和跑的是两回事（实测踩过）
+    from . import model_registry as _mr
+
+    _prov, _model, _meta = _mr.resolve(settings, "image")
+    _pmeta = _mr.get_provider(_prov) or {}
+    _key = str(settings.get(str(_pmeta.get("key_env") or "")) or settings.get("VIDEO_API_KEY") or "")
+    _base = str(settings.get(_prov.upper() + "_BASE_URL") or _pmeta.get("base_url") or settings.get("VIDEO_API_BASE_URL") or "")
+    cloud = CloudImageProvider(provider=_prov, base_url=_base, api_key=_key, model=_model)
     out = []
     for prov in (comfy, offline, cloud):
         ok, why = prov.available()

@@ -355,6 +355,8 @@ class CloudVideoProvider:
         结果 video_result[0].url
     """
 
+    #: 用哪家：zhipu / minimax。两家的提交、轮询、取文件接口完全不同
+    provider: str = "zhipu"
     base_url: str = ""
     api_key: str = ""
     model: str = "cogvideox-2"
@@ -369,8 +371,9 @@ class CloudVideoProvider:
 
     def available(self) -> tuple[bool, str]:
         if not self.base_url or not self.api_key:
-            return False, "未配置云端视频 API（VIDEO_API_BASE_URL / VIDEO_API_KEY）"
-        return True, f"智谱 {self.model}（图生视频，约 60-190 秒/镜，自动裁水印）"
+            return False, f"未配置 {self.provider} 的端点与 Key"
+        label = {"minimax": "MiniMax", "zhipu": "智谱"}.get(self.provider, self.provider)
+        return True, f"{label} {self.model}（图生视频，自动裁水印）"
 
     def _image_b64(self, still: Path) -> str:
         import base64
@@ -449,8 +452,12 @@ class CloudVideoProvider:
 
     def make_clip(self, shot: Shot, still: Path, out_path: Path, duration: float) -> Path:
         prompt = (shot.prompt_image or shot.visual or "").strip() or "cinematic shot"
-        task_id = self._submit(prompt, still)
-        url = self._wait(task_id)
+        if self.provider == "minimax":
+            task_id = self._mm_submit(prompt, still, duration)
+            url = self._mm_wait(task_id)
+        else:
+            task_id = self._submit(prompt, still)
+            url = self._wait(task_id)
 
         raw_out = out_path.parent / (out_path.stem + "_cloud_raw.mp4")
         try:
@@ -474,12 +481,100 @@ class CloudVideoProvider:
             raw_out.unlink(missing_ok=True)
         return out_path
 
+    # ---------------------------------------------------------- MiniMax
+    # 三步入库，和智谱完全不同：
+    #   ① POST /v1/video_generation        → task_id
+    #   ② GET  /v1/query/video_generation  → status + file_id
+    #   ③ GET  /v1/files/retrieve          → file.download_url
+
+    def _mm_submit(self, prompt: str, still: Path, duration: float) -> str:
+        body = {
+            "model": self.model,
+            "prompt": prompt,
+            "first_frame_image": self._image_b64(still),
+            # MiniMax 只认 6 或 10 秒；镜长不足 6 秒也按 6 秒生成，后面再裁
+            "duration": 6 if duration <= 6 else 10,
+            "resolution": "768P" if self.model.startswith("MiniMax-Hailuo") else "720P",
+        }
+        url = self._url("/v1/video_generation")
+        data: dict = {}
+        for attempt in range(4):
+            req = urllib.request.Request(
+                url, data=json.dumps(body).encode(), method="POST",
+                headers={"Authorization": "Bearer " + self.api_key, "Content-Type": "application/json"},
+            )
+            try:
+                with open_url(req, timeout=90) as r:
+                    data = json.loads(r.read() or b"{}")
+                break
+            except urllib.error.HTTPError as exc:
+                if exc.code == 429 and attempt < 3:
+                    time.sleep(10 * (attempt + 1))
+                    continue
+                raise VideoError("MiniMax 提交失败：" + describe_net_error(url, exc)) from exc
+            except Exception as exc:  # noqa: BLE001
+                raise VideoError("MiniMax 提交失败：" + describe_net_error(url, exc)) from exc
+
+        base_resp = data.get("base_resp") or {}
+        if base_resp.get("status_code") not in (0, "0", None):
+            raise VideoError(f"MiniMax 拒绝任务：{base_resp.get('status_msg') or data}")
+        task_id = data.get("task_id")
+        if not task_id:
+            raise VideoError("MiniMax 未返回 task_id：" + json.dumps(data, ensure_ascii=False)[:200])
+        return str(task_id)
+
+    def _mm_wait(self, task_id: str) -> str:
+        """轮询到 Success，再换下载链接。未完成时业务码是 0 且 status 为
+        Queueing/Processing/Preparing，所以不能只看 status_code。"""
+        t0 = time.time()
+        last = ""
+        while time.time() - t0 < self.poll_timeout:
+            q = self._url("/v1/query/video_generation?task_id=" + task_id)
+            try:
+                req = urllib.request.Request(q, headers={"Authorization": "Bearer " + self.api_key})
+                with open_url(req, timeout=40) as r:
+                    data = json.loads(r.read() or b"{}")
+            except Exception:  # noqa: BLE001
+                time.sleep(5)
+                continue
+            status = str(data.get("status") or "").lower()
+            last = status or last
+            if status in ("success", "succeeded"):
+                file_id = str(data.get("file_id") or "")
+                if not file_id:
+                    raise VideoError("MiniMax 成功但没给 file_id：" + json.dumps(data, ensure_ascii=False)[:200])
+                return self._mm_file_url(file_id)
+            if status in ("fail", "failed"):
+                raise VideoError("MiniMax 渲染失败：" + json.dumps(data, ensure_ascii=False)[:200])
+            time.sleep(5)
+        raise VideoError(f"MiniMax 渲染超时（{self.poll_timeout} 秒，最后状态 {last or '未知'}）")
+
+    def _mm_file_url(self, file_id: str) -> str:
+        q = self._url("/v1/files/retrieve?file_id=" + file_id)
+        req = urllib.request.Request(q, headers={"Authorization": "Bearer " + self.api_key})
+        try:
+            with open_url(req, timeout=40) as r:
+                data = json.loads(r.read() or b"{}")
+        except Exception as exc:  # noqa: BLE001
+            raise VideoError("MiniMax 取文件链接失败：" + describe_net_error(q, exc)) from exc
+        url = ((data.get("file") or {}).get("download_url")) or ""
+        if not url:
+            raise VideoError("MiniMax 没返回 download_url：" + json.dumps(data, ensure_ascii=False)[:200])
+        return str(url)
+
 
 def build_video_chain(settings, width: int, height: int) -> list[VideoProvider]:
     chain: list[VideoProvider] = []
-    cloud = CloudVideoProvider(
-        base_url=settings.get("VIDEO_API_BASE_URL"), api_key=settings.get("VIDEO_API_KEY")
-    )
+    from . import model_registry
+
+    vid_provider, vid_model, _vid_meta = model_registry.resolve(settings, "video")
+    prov_meta = model_registry.get_provider(vid_provider) or {}
+    key_name = str(prov_meta.get("key_env") or "VIDEO_API_KEY")
+    vid_key = str(settings.get(key_name) or settings.get("VIDEO_API_KEY") or "")
+    vid_base = str(settings.get(vid_provider.upper() + "_BASE_URL")
+                   or prov_meta.get("base_url") or settings.get("VIDEO_API_BASE_URL") or "")
+    cloud = CloudVideoProvider(provider=vid_provider, base_url=vid_base,
+                               api_key=vid_key, model=vid_model)
     ok, _why = cloud.available()
     if ok:
         chain.append(cloud)

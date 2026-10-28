@@ -102,6 +102,27 @@ def device() -> dict:
     return detect()
 
 
+@app.get("/api/models")
+def models() -> dict:
+    """模型目录：有什么可选、多少钱、有什么限制，以及当前生效的组合。"""
+    from pipeline import model_registry as mr
+    from pipeline.config import load_env_file
+
+    settings = load_env_file()
+    current: dict = {}
+    for kind in ("image", "video"):
+        prov, mid, meta = mr.resolve(settings, kind)
+        current[kind] = {
+            "provider": prov,
+            "model": mid,
+            "label": meta.get("provider_label"),
+            "price_note": mr.price_note(kind, prov, mid),
+            "fallback": bool(meta.get("fallback")),
+            "note": meta.get("note", ""),
+        }
+    return {"current": current, "catalog": mr.catalog()}
+
+
 @app.get("/api/device/report")
 def device_report() -> dict:
     """读上次保存的体检报告；没有就现场检测一份（不落盘）。
