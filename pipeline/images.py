@@ -460,20 +460,36 @@ def build_provider_chain(settings, workflow_dir: Path,
                                api_key=img_key, model=img_model)
     cloud_ok = cloud.available()[0]
 
+    # **IMAGE_MODE 决定谁在前面**：
+    #   cloud（默认）= 画质优先，云端出精修，本地当断网/限流的备胎
+    #   local        = 省钱/草稿优先，本地先出，云端当质量兜底
+    # 为什么需要 local：本地出图约 8 秒/张且免费，云端约 60 秒/镜且按秒计费。
+    # 先用免费的把构图试对、再花钱出精修，这才是本地模型该待的位置——
+    # 而不是"云端挂了才想起来它"。
+    mode = str(settings.get("IMAGE_MODE") or "cloud").strip().lower()
+    prefer_local = mode == "local"
+
     if require_real:
-        # 真图优先时**云端在前**：SD 1.5 读不懂中文提示词、只有 8 步 512×320，
-        # 画质与遵循度都撑不起"真图"。ComfyUI 留在链尾当断网/额度用完的备胎。
-        if cloud_ok:
-            chain.append(cloud)
-        if comfy_ok:
-            chain.append(ComfyUIProvider(
-                base_url=settings.get("COMFYUI_BASE_URL"), workflow_dir=workflow_dir))
+        local_provider = (ComfyUIProvider(
+            base_url=settings.get("COMFYUI_BASE_URL"), workflow_dir=workflow_dir)
+            if comfy_ok else None)
+        if prefer_local:
+            if local_provider is not None:
+                chain.append(local_provider)
+            if cloud_ok:
+                chain.append(cloud)
+        else:
+            if cloud_ok:
+                chain.append(cloud)
+            if local_provider is not None:
+                chain.append(local_provider)
         if not chain:
             detail = (comfy_status or {}).get("detail", "未探测到 ComfyUI")
             raise ImageError(
                 "已勾选「必须真图」，但没有可用出图后端：云端未配置（VIDEO_API_KEY），"
                 "本地 ComfyUI 也不可用（" + str(detail)[:120] + "）。"
-                "｜配置云端 Key，或先启动 ComfyUI，或取消勾选「必须真图」。")
+                "｜配置云端 Key，或先启动 ComfyUI，或取消勾选「必须真图」。"
+                "（当前 IMAGE_MODE=" + mode + "）")
         return chain
 
     # 不要求真图：本地优先（免费），ComfyUI 不通就占位帧

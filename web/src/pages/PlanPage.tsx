@@ -301,6 +301,20 @@ function ShotEditor({
             />
           </div>
         </div>
+
+        {/* 默认只给中文（用户写什么就看到什么），实际发给模型的 prompt 折起来。
+            为什么要留入口：这套东西的卖点之一是"可追溯"——出图不对时，
+            用户能自己看到底把哪句话、加了哪些修饰词发了出去，而不是只能猜。 */}
+        {shot.prompt_image && (
+          <details className="mt-1.5">
+            <summary className="cursor-pointer select-none text-[11px] text-ink-mute transition-colors hover:text-ink-dim">
+              查看发给模型的原文
+            </summary>
+            <pre className="mt-1 whitespace-pre-wrap break-all rounded-lg bg-[var(--sunk)] px-2 py-1.5 font-mono text-[10.5px] leading-relaxed text-ink-dim">
+              {shot.prompt_image}
+            </pre>
+          </details>
+        )}
       </div>
     </div>
   )

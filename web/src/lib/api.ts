@@ -454,6 +454,9 @@ export interface PlanShot {
   camera: string
   caption?: string
   status?: string
+  /** 实际发给模型的 prompt（中文主体 + 英文修饰）。界面默认不显示，
+   *  折叠在「查看发给模型的原文」里，供排查“为什么出图不对”。 */
+  prompt_image?: string
 }
 
 export interface PlanSubject {
