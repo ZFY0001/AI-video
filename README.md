@@ -1,4 +1,4 @@
-# 一言片场 V4
+# 一言片场 V5
 
 **一句话进，成片出。** 输入一句主题、或「一句话 + 音频 + 歌词」，全自动完成：
 简报 → 剧本 → 分镜 → 出图 → 质检 → 重试 → 出片 → 配音 → 字幕 → 合成。
@@ -33,19 +33,67 @@
 
 ---
 
-## 快速开始（从源码跑）
+## 快速开始（从源码跑，约 10 分钟）
 
-```powershell
-git clone <仓库地址>
-cd 一言片场-V3
-python setup.py --install --ffmpeg   # 一次性：装 Python/npm 依赖 + 下载 FFmpeg（约 213 MB）
-python setup.py                      # 应显示「可以出片了」
-cd web && npm install && npm run build   # 一次性：构建前端（客户端装的是 web/dist）
-cd .. && 启动客户端.bat               # 双击也行：原生窗口；启动Web版.bat 走浏览器
+### 你需要什么
+
+| 项 | 版本 | 为什么 |
+|---|---|---|
+| **Python** | 3.10+（推荐 3.11/3.12） | 跑后端 |
+| **Node.js** | 18+（推荐 20/22） | 构建 / 开发前端 |
+| **Git** | 任意新版本 | 拉代码 |
+| **FFmpeg** | 任意 | 出片合成；**仓库里没带**，下一步会装 |
+
+> **本仓库不含任何 API Key**（`.env` 在 `.gitignore` 里）。
+> 想出真画面需要自己申请模型服务的 Key —— 见下面第 3 步。
+
+### 三步跑起来
+
+```
+# 1. 拉代码（克隆后的目录名是 AI-video，不是中文名）
+git clone git@github.com:ZFY0001/AI-video.git
+cd AI-video
+
+# 2. 一次性装依赖 + 下载 FFmpeg（约 213 MB）
+python setup.py --install --ffmpeg
+python setup.py                      # 自检：看到「可以出片了」就 OK
+
+# 3. 配自己的 Key（不配也能跑，但只能出占位帧）
+copy .env.example .env
+#   编辑 .env，最少填这两行：
+#     MINIMAX_API_KEY=你的Key
+#     MINIMAX_BASE_URL=https://api.minimax.chat
 ```
 
-一个 Key 都不配也能出片（离线引擎 + Windows 中文语音 + 占位帧画面）；
-勾「代码绘制」得到 p5.js 水彩真画面；配 `LLM_API_KEY` 升级文案质量。
+### 启动
+
+```
+cd web && npm ci && npm run build    # 首次或改过前端时才需要
+cd .. && python -m server            # 后端，默认 8000（被占会自动往后找）
+```
+
+浏览器打开 **http://127.0.0.1:8000**；也可以双击 `启动客户端.bat` 开原生窗口。
+
+### 一个 Key 都不配会怎样
+
+能跑通整条链路并出片，但画面是**占位帧**（程序画的色块 + 镜号 + 字幕），
+用来验证「分镜 → 画面 → 视频 → 成片」这条流水线。**想要真画面必须配 Key。**
+
+### 换模型（不局限一家）
+
+默认走 **MiniMax** 最便宜档：`image-01` 出图（约 0.05 元/张）+
+`MiniMax-Hailuo-2.3-Fast` 出片（约 0.32 元/秒）。
+换一家只改 `.env` 四行：
+
+```ini
+IMAGE_PROVIDER=zhipu        # zhipu 或 minimax
+IMAGE_MODEL=cogview-4
+VIDEO_PROVIDER=zhipu
+VIDEO_MODEL=cogvideox-2
+```
+
+可选模型、单价、分辨率限制都在 `GET /api/models` 里，源码在
+`pipeline/model_registry.py`。写了不存在的模型名**不会崩**，会自动回落默认。
 
 ---
 
