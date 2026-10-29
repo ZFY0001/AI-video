@@ -329,6 +329,13 @@ def build_scene_js(
     # 短边都是 1080，所以 U 恒为 1、输出与改造前完全一致；换到 720p/1440p 时才会
     # 按比例缩放。曾按 H 归一（竖屏 U=1.78），实测把角色放大到撑满画面宽度并被右缘裁切。
     parts.append("const U = Math.min(W, H) / 1080;   // 短边 1080 基准的绝对像素换算")
+    # 题材 → 图标。图标是**专业库里的精确形状**，比手写剪影可控得多；
+    # 认不出题材时用 sun（最中性，不会画错东西）。
+    _ICON_BY_GENRE = {
+        "烟火美食": "soup",
+        "城市宣传": "building",
+    }
+    parts.append("const ICON_FOR_SHOT = %s;" % _js_str(_ICON_BY_GENRE.get(genre_label, "sun")))
 
     parts.append(SCENE_HELPERS_JS)
 
@@ -700,6 +707,11 @@ function shot{idx}(t, lt, dur) {{
   _paintProp(t, {idx}, dur, {zoom});
   _paintForeground(t, {idx}, dur);
   camEnd();
+  // SVG 图标：画在 camEnd() 之后，用屏幕坐标（免疫相机变换）。
+  // 放在左下角，和右下角的道具错开，避免抢主体。
+  // 颜色用 HOT（亮米白）而不是 FORE：FORE 是深褐，和暖色地面几乎同色，
+  // 画上去等于隐形（实测踩过）。亮色描边在任何底色上都能立住。
+  _paintIconSoft(ICON_FOR_SHOT, W * .145, H * .80, Math.min(W, H) * .155, HOT, HOT, .22);
   _paintIrisOut(t);
   // 字幕画在 camEnd() **之后**：相机变换会把它一起缩放平移，特写(zoom=1.9)时
   // 底板会被推出画面下沿——实测出现过"特写镜头字幕整个消失"。字幕必须免疫相机。
@@ -907,6 +919,60 @@ function _paintCaption(txt, lt, dur) {
     { fill: '#FFF5E2', fillOp: 240 * a, ink: PAL.ink, sw: .6 });
   letter(txt, W * .5, y, size, '#2B2233', { alpha: a, bold: true });
 }
+
+
+// ---------- SVG 图标路径（Tabler Icons, MIT）----------
+// 形状来自专业图标库（精确），描边用 canvas 原生 path（不是 p5.brush），
+// 所以边缘干净；水彩质感靠外面再叠一层 wash。
+const ICON_PATHS = {
+  "building": ["M0 0h24v24H0z", "M3 21l18 0", "M9 8l1 0", "M9 12l1 0", "M9 16l1 0", "M14 8l1 0", "M14 12l1 0", "M14 16l1 0", "M5 21v-16a2 2 0 0 1 2 -2h10a2 2 0 0 1 2 2v16"],
+  "soup": ["M0 0h24v24H0z", "M4 11h16a1 1 0 0 1 1 1v.5c0 1.5 -2.517 5.573 -4 6.5v1a1 1 0 0 1 -1 1h-8a1 1 0 0 1 -1 -1v-1c-1.687 -1.054 -4 -5 -4 -6.5v-.5a1 1 0 0 1 1 -1z", "M12 4a2.4 2.4 0 0 0 -1 2a2.4 2.4 0 0 0 1 2", "M16 4a2.4 2.4 0 0 0 -1 2a2.4 2.4 0 0 0 1 2", "M8 4a2.4 2.4 0 0 0 -1 2a2.4 2.4 0 0 0 1 2"],
+  "sun": ["M0 0h24v24H0z", "M12 12m-4 0a4 4 0 1 0 8 0a4 4 0 1 0 -8 0", "M3 12h1m8 -9v1m8 8h1m-9 8v1m-6.4 -15.4l.7 .7m12.1 -.7l-.7 .7m0 11.4l.7 .7m-12.1 -.7l-.7 .7"],
+};
+
+
+// 把某个 SVG 图标画到屏幕坐标 (x, y)，size 是边长像素。
+// **必须在 camEnd() 之后调用**：drawingContext 不受 p5 的相机变换影响，
+// 若在 camBegin/camEnd 之间调用，图标会按屏幕坐标画但被相机再叠一次，位置全错。
+function _paintIcon(name, x, y, size, color, weight) {
+  const paths = ICON_PATHS[name];
+  if (!paths) return;
+  // 不要用 p5 的 drawingContext：p5 2.x 里它不是 CanvasRenderingContext2D，
+  // 取到的是别的对象，`ctx.save is not a function`（实测踩过）。
+  // 直接拿页面上那个 canvas 的 2d context——已经取过就返回同一个，不会重建。
+  const cv = document.querySelector('canvas');
+  const ctx = cv ? cv.getContext('2d') : null;
+  if (!ctx) return;
+  const k = size / 24;                 // viewBox 是 24×24
+  ctx.save();
+  ctx.translate(x - size / 2, y - size / 2);
+  ctx.scale(k, k);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = (weight || 1.6) / k;  // 除以 k，缩放后线宽仍是 weight 像素
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  for (const d of paths) {
+    try { ctx.stroke(new Path2D(d)); } catch (e) { /* 个别路径语法不兼容就跳过 */ }
+  }
+  ctx.restore();
+}
+
+// 带水彩底衬的图标：先铺一层晕染色块，再描边。
+// 为什么要有底衬：纯线条在远景里会"飘"，垫一层淡色让它有重量。
+function _paintIconSoft(name, x, y, size, ink, washCol, alpha) {
+  const cv = document.querySelector('canvas');
+  const ctx = cv ? cv.getContext('2d') : null;
+  if (!ctx) return;
+  ctx.save();
+  ctx.globalAlpha = alpha == null ? 0.5 : alpha;
+  ctx.fillStyle = washCol;
+  ctx.beginPath();
+  ctx.arc(x, y, size * 0.46, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+  _paintIcon(name, x, y, size, ink, 2.6);
+}
+
 """
 
 # ---------------------------------------------------------------- 渲染驱动
@@ -1514,7 +1580,15 @@ def apply_painted(
         result.setdefault("notes", []).append("代码绘制：没有分镜数据，已跳过")
         return result
 
-    genre_label = str((result.get("brief") or {}).get("style") or "")
+    # 题材名必须用 pick_genre 归一化：brief["style"] 是「烟火气、暖色调、纪实风」
+    # 这种自由文本，而 GENRE_PALETTES 的键是「烟火美食」这类标准名——
+    # 直接拿 style 去查永远查不到，于是永远走默认蓝色调色板（实测踩过）。
+    # 标题也一起喂进去：题材判断靠标题往往比靠风格更准。
+    from .genre import pick_genre as _pick
+
+    _title = str((board.get("project") or {}).get("title") or "")
+    _style = str((result.get("brief") or {}).get("style") or "")
+    genre_label = _pick((_title + " " + _style).strip()).label if (_title or _style) else ""
     project_dir = Path(result.get("project_dir") or ROOT / "runs" / str(result.get("run_id") or ""))
     out_dir = project_dir / "painted"
     # 覆盖 comp 之前先把旧值取出来：原来的代码在 comp.update() 之后才读 old_video，
