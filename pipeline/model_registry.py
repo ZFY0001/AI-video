@@ -119,6 +119,31 @@ PROVIDERS: dict[str, dict[str, Any]] = {
     },
 }
 
+#: 域名片段 → 厂商 id。用户只填「地址 + Key」，由这里判断走哪套接口。
+#: 加新厂商只要两处：PROVIDERS 里加一条、这里加一行域名匹配。
+HOST_HINTS: tuple[tuple[str, str], ...] = (
+    ("minimax", "minimax"),
+    ("bigmodel", "zhipu"),
+    ("zhipu", "zhipu"),
+)
+
+
+def detect_provider(*urls: str) -> str:
+    """从 base_url 猜厂商。认不出返回空串（由调用方回落默认）。
+
+    为什么要这一步：用户要的是"我只填地址和 Key"，而不是
+    "你先把厂商列表列出来让我选"。地址本身就是最可靠的线索。
+    """
+    for url in urls:
+        low = str(url or "").lower()
+        if not low:
+            continue
+        for frag, pid in HOST_HINTS:
+            if frag in low:
+                return pid
+    return ""
+
+
 #: 默认：全部走 MiniMax 的最便宜档（用户 2026-10-28 明确要求）
 DEFAULTS = {
     "IMAGE_PROVIDER": "minimax",
@@ -170,14 +195,37 @@ def resolve(settings: dict[str, Any], kind: str) -> tuple[str, str, dict[str, An
     model_id = str(settings.get(f"{prefix}_MODEL") or "").strip()
     fallback = False
 
+    # ① **地址优先**：用户唯一必填的就是「地址 + Key」，地址本身最能说明是哪家。
+    #    不能用 `if not provider` 做条件——config.py 会给 IMAGE_PROVIDER 一个默认值
+    #    minimax，那样永远轮不到按地址识别，用户填了智谱地址还在调 MiniMax（实测踩过）。
+    detected = detect_provider(
+        str(settings.get("VIDEO_API_BASE_URL") or ""),
+        str(settings.get("MINIMAX_BASE_URL") or ""),
+        str(settings.get("ZHIPU_BASE_URL") or ""),
+    )
+    if detected:
+        # **换家必须重选模型**：model_id 可能是上一家的（比如 MiniMax 的 image-01），
+        # 拿到智谱去查必然查不到，然后回落全局默认，等于地址识别白做了（实测踩过）。
+        if detected != provider:
+            model_id = ""
+        provider = detected
+
     if not provider or not get_provider(provider):
         provider, model_id = default_of(kind)
         fallback = True
-    meta = find_model(kind, provider, model_id)
+
+    meta = find_model(kind, provider, model_id) if model_id else None
     if meta is None:
-        provider, model_id = default_of(kind)
-        meta = find_model(kind, provider, model_id) or {}
-        fallback = True
+        # 用**这一家**的第一个模型，而不是全局默认（否则换家等于没换）
+        options = models_of(kind, provider)
+        if options:
+            meta = options[0]
+            model_id = str(meta.get("id") or "")
+            fallback = fallback or bool(settings.get(f"{prefix}_PROVIDER"))
+        else:
+            provider, model_id = default_of(kind)
+            meta = find_model(kind, provider, model_id) or {}
+            fallback = True
     out = dict(meta)
     out["provider"] = provider
     out["provider_label"] = (get_provider(provider) or {}).get("label", provider)
