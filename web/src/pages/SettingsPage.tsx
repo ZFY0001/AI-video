@@ -59,6 +59,38 @@ const FIELDS: {
     hint: '本地出图服务，没启动会降级',
     placeholder: 'http://127.0.0.1:8188',
   },
+  {
+    key: 'MINIMAX_API_KEY',
+    label: '视频模型 Key（MiniMax）',
+    hint: '出图 + 出视频都走它；不配就只能出占位帧',
+    secret: true,
+    placeholder: 'sk-cp-…',
+  },
+  {
+    key: 'ZHIPU_API_KEY',
+    label: '视频模型 Key（智谱）',
+    hint: '备选。按次计费，1080P，比 MiniMax 便宜',
+    secret: true,
+    placeholder: 'xxxxxxxx.xxxxxxxx',
+  },
+  {
+    key: 'IMAGE_PROVIDER',
+    label: '出图用哪家',
+    hint: 'minimax / zhipu；留空用 minimax',
+    placeholder: 'minimax',
+  },
+  {
+    key: 'VIDEO_PROVIDER',
+    label: '出视频用哪家',
+    hint: 'minimax / zhipu；留空用 minimax',
+    placeholder: 'minimax',
+  },
+  {
+    key: 'IMAGE_MODE',
+    label: '出图优先级',
+    hint: 'cloud = 云端优先（画质好）；local = 本地优先（免费但糙）',
+    placeholder: 'cloud',
+  },
 ]
 
 export function SettingsPage({ onEnvChange }: { onEnvChange?: (env: EnvPayload) => void } = {}) {
