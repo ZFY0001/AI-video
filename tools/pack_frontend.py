@@ -30,7 +30,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 #: 项目根：本文件在 tools/ 下，往上一层才是项目
 ROOT = Path(__file__).resolve().parents[1]
-APP = "YiYanStudio-V5"
+APP = "YiYanStudio-V6"
 
 #: 按目录名整段排除（任意层级）
 SKIP_DIR_NAMES = {

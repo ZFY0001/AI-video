@@ -39,7 +39,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 ENTRY = ROOT / "desktop.py"
-APP_NAME = "YiYanStudio-V5"
+APP_NAME = "YiYanStudio-V6"
 DIST_DIR = ROOT / "dist"
 BUILD_DIR = ROOT / "build"
 
