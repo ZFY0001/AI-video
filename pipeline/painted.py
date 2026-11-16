@@ -29,7 +29,7 @@ import sys
 import threading
 import time
 
-from .proc import hidden_kwargs, run as run_hidden
+from . import procguard
 from .models import caption_of
 from dataclasses import dataclass
 from pathlib import Path
@@ -149,7 +149,7 @@ def _link_modules(src_mods: Path, dst_mods: Path) -> None:
         if os.name == "nt":
             # mklink /J 建目录联接：不需要 SeCreateSymbolicLinkPrivilege。
             rc = subprocess.call(["cmd", "/c", "mklink", "/J", str(dst_mods), str(src_mods)],
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **hidden_kwargs())
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             if rc == 0 and dst_mods.exists():
                 return
         else:
@@ -299,6 +299,7 @@ def build_scene_js(
     genre_label: str = "",
     fps: int = 24,
     captions: bool = True,
+    subtitle_offset: float = 0.0,
 ) -> str:
     """把分镜数据编译成引擎场景 JS。
 
@@ -329,32 +330,9 @@ def build_scene_js(
     # 短边都是 1080，所以 U 恒为 1、输出与改造前完全一致；换到 720p/1440p 时才会
     # 按比例缩放。曾按 H 归一（竖屏 U=1.78），实测把角色放大到撑满画面宽度并被右缘裁切。
     parts.append("const U = Math.min(W, H) / 1080;   // 短边 1080 基准的绝对像素换算")
-    # 题材 → 图标。图标是**专业库里的精确形状**，比手写剪影可控得多；
-    # 认不出题材时用 sun（最中性，不会画错东西）。
-    # 五个题材各有一个**语义对得上**的图标。以前只映射了两种，其余三类
-    # （人物/产品/古建）全都退回 sun——一个太阳挂在国风古建片里，纯属穿帮。
-    # 图标源在 vendor/painted-template/assets/icons/*.svg，
-    # 折线数据用 `node tools/svg2poly.js` 生成（p5.brush 只吃折线，不吃贝塞尔）。
-    _ICON_BY_GENRE = {
-        "烟火美食": "soup",
-        "城市宣传": "building",
-        "人物故事": "umbrella",
-        "产品商业": "package",
-        "国风古建": "building-monument",
-    }
-    parts.append("const ICON_FOR_SHOT = %s;" % _js_str(_ICON_BY_GENRE.get(genre_label, "sun")))
-    # 道具也必须由**题材**决定，不能由镜头序号决定。
-    # 原来是 ``idx % 5``——同一个美食片的第 1/2/3 镜会依次画灶台、楼群、雨伞，
-    # 等于每换一镜就换一个世界（实测出来的画面：美食片第二镜冒出一排办公楼）。
-    # -1 表示题材认不出，此时退回按镜头序号轮换，至少还能有变化。
-    _PROP_BY_GENRE = {
-        "烟火美食": 0,
-        "城市宣传": 1,
-        "人物故事": 2,
-        "产品商业": 3,
-        "国风古建": 4,
-    }
-    parts.append("const PROP_KIND = %d;" % _PROP_BY_GENRE.get(genre_label, -1))
+    # 字幕整体偏移（秒）。与合成层/SRT 用的是同一个值，否则画面字幕与
+    # 外挂字幕对不齐。正数 = 字幕晚出现。
+    parts.append("const SUB_OFFSET = %s;" % _js_num(subtitle_offset))
 
     parts.append(SCENE_HELPERS_JS)
 
@@ -511,26 +489,50 @@ def build_config_js(
     )
 
 
-def build_lyrics_js(lines: list[dict[str, Any]] | None) -> str:
+def subtitle_plan(
+    mode: str,
+    lyrics: list[dict[str, Any]] | None,
+    lines: list[dict[str, Any]] | None,
+) -> tuple[bool, bool, bool, list[dict[str, Any]] | None]:
+    """绘制版的字幕决策：``(是否烧字, 整句字幕, 逐字卡拉OK, 用哪条时间轴)``。
+
+    与合成层同一套语义，否则同一个设置在两种后端下表现不同：
+    - ``none`` / ``sidecar``：画面一律不烧字（sidecar 的字幕由 SRT 负责）；
+    - 人工字幕轨优先于歌词与镜头字幕——用户明确改过时间与断句；
+    - 人工轨给成**空列表** = 明确不要字幕，连镜头自带的整句字幕也不能烧。
+    """
+    burn = str(mode or "burn").strip().lower() not in ("none", "sidecar")
+    manual = lines is not None
+    track = lines if manual else lyrics
+    karaoke = burn and bool(track)
+    captions = burn and not karaoke and not manual
+    return burn, captions, karaoke, track
+
+
+def build_lyrics_js(lines: list[dict[str, Any]] | None, offset: float = 0.0) -> str:
     """生成 src/lyrics.js：把歌词按引擎要的格式注入 ``window.KARAOKE_LY``。
 
     引擎的格式是 ``[[start, end, "词", opts?]]``，时间是**片子时间**。
     MV 模式下片子时间 == 歌曲时间（时间轴按音频时长对齐），所以歌词时间可直接用。
 
+    ``offset`` 是字幕整体偏移，与 SRT/字幕卡用的是同一个值：不一起平移，
+    画面上的逐字歌词就会和外挂字幕差一个固定量。
+
     必须**先于** karaoke.js 加载：karaoke.js 的 ``window.EXTRA_FONTS`` 在脚本加载时
     就按歌词字符算好了字体预载集，事后注入既改不了它的 ``const LY``、也来不及预载字体。
     """
     rows: list[str] = []
+    shift = float(offset or 0.0)
     for ln in lines or []:
         text = str(ln.get("text") or "").strip()
         try:
-            a = float(ln.get("start") or 0.0)
-            b = float(ln.get("end") or 0.0)
+            a = float(ln.get("start") or 0.0) + shift
+            b = float(ln.get("end") or 0.0) + shift
         except (TypeError, ValueError):
             continue
-        if not text or b <= a:
+        if not text or b <= a or b <= 0:
             continue
-        rows.append(f"  [{_js_num(a)}, {_js_num(b)}, {_js_str(text)}],")
+        rows.append(f"  [{_js_num(max(0.0, a))}, {_js_num(b)}, {_js_str(text)}],")
     body = "\n".join(rows)
     return (
         "// 由 pipeline/painted.py 自动生成 —— 请勿手工编辑\n"
@@ -726,16 +728,11 @@ function shot{idx}(t, lt, dur) {{
   _paintProp(t, {idx}, dur, {zoom});
   _paintForeground(t, {idx}, dur);
   camEnd();
-  // SVG 图标：画在 camEnd() 之后，用屏幕坐标（免疫相机变换）。
-  // 放在左下角，和右下角的道具错开，避免抢主体。
-  // 颜色用 HOT（亮米白）而不是 FORE：FORE 是深褐，和暖色地面几乎同色，
-  // 画上去等于隐形（实测踩过）。亮色描边在任何底色上都能立住。
-  _paintIconSoft(ICON_FOR_SHOT, W * .145, H * .80, Math.min(W, H) * .155, HOT, HOT, .22);
   _paintIrisOut(t);
   // 字幕画在 camEnd() **之后**：相机变换会把它一起缩放平移，特写(zoom=1.9)时
   // 底板会被推出画面下沿——实测出现过"特写镜头字幕整个消失"。字幕必须免疫相机。
   const _cap = {narr_js};
-  if (_cap) _paintCaption(_cap, lt, dur);
+  if (_cap) _paintCaption(_cap, lt - SUB_OFFSET, dur);
 }}
 """
 
@@ -861,10 +858,7 @@ function _paintProp(t, idx, dur, frame) {
   if (k < .02) return;
   const a = .55 + .45 * Math.sin(t * .8 + idx) * .12 + .45 * k;
   push(); translate(x, y);
-  // pk = 本片道具种类：由**题材**决定（PROP_KIND），整片恒定。
-  // 只有题材认不出来（PROP_KIND = -1）时才按镜头序号轮换。
-  const pk = PROP_KIND >= 0 ? PROP_KIND : (idx % 5);
-  if (pk === 0) {                       // 烟火美食：灶台 + 升腾热气
+  if (idx % 5 === 0) {                       // 烟火美食：灶台 + 升腾热气
     paint(ellPts(0, -u * .2, u * 1.5, u * .55, 26, 2), { fill: FORE, fillOp: 210 * a, ink: PAL.ink, sw: 1 });
     paint(ellPts(0, -u * .2, u * 1.2, u * .40, 22, 2), { wash: HOT, fillOp: 120 * a, ink: null });
     for (let i = 0; i < 3; i++) {
@@ -875,7 +869,7 @@ function _paintProp(t, idx, dur, frame) {
       inkLine([[sx, sy], [sx + 6, sy - u * .5], [sx - 4, sy - u]], 2.4,
         mixCol('#FFF5E2', HOT, .4), 'inkfine', .6);
     }
-  } else if (pk === 1) {                // 城市宣传：楼群剪影
+  } else if (idx % 5 === 1) {                // 城市宣传：楼群剪影
     for (let i = 0; i < 4; i++) {
       const bw = u * (.5 + .5 * hash(i + idx)), bh = u * (1.2 + 2.4 * hash(i * 3 + idx));
       paint(rectPts(-u * 1.5 + i * u * .78, -bh, bw, bh, 1),
@@ -886,11 +880,11 @@ function _paintProp(t, idx, dur, frame) {
             paint(rectPts(-u * 1.5 + i * u * .78 + u * .12 + c * u * .28, -bh + r * u * .34, u * .13, u * .17, 0),
               { fill: HOT, fillOp: 150 * a, ink: null });
     }
-  } else if (pk === 2) {                // 人物故事：一把伞 + 一位远景人影
+  } else if (idx % 5 === 2) {                // 人物故事：一把伞 + 一位远景人影
     paint(ellPts(-u * 1.4, -u * 1.5, u * .9, u * .85, 24, 1.5),
       { fill: PROP, fillOp: 200 * a, ink: PAL.ink, sw: 1 });
     inkLine([[-u * 1.4, -u * .7], [-u * 1.4, 0]], 2.0, FORE, 'ink', .3);
-  } else if (pk === 3) {                // 产品商业：一块展台 + 高光
+  } else if (idx % 5 === 3) {                // 产品商业：一块展台 + 高光
     paint(rrPts(-u * 1.6, -u * .9, u * 2.2, u * .9, u * .12),
       { fill: FORE, fillOp: 205 * a, ink: PAL.ink, sw: 1 });
     paint(rrPts(-u * 1.35, -u * .68, u * 1.7, u * .5, u * .08),
@@ -941,66 +935,6 @@ function _paintCaption(txt, lt, dur) {
     { fill: '#FFF5E2', fillOp: 240 * a, ink: PAL.ink, sw: .6 });
   letter(txt, W * .5, y, size, '#2B2233', { alpha: a, bold: true });
 }
-
-
-// ---------- SVG 图标折线（Tabler Icons, MIT）----------
-// 曲线已采样成折线点（每段 10 点）：场景里用的是 p5.brush 的
-// brush.beginShape/vertex/endShape，它只吃折线，没有 bezierVertex。
-const ICON_POLYS = {
-  "building-monument": [[[8,18],[10,5],[12,3],[14,5],[16,18]],[[5,21],[5,18],[19,18],[19,21]],[[3,21],[21,21]]],
-  "building": [[[3,21],[21,21]],[[9,8],[10,8]],[[9,12],[10,12]],[[9,16],[10,16]],[[14,8],[15,8]],[[14,12],[15,12]],[[14,16],[15,16]],[[5,21],[5,5],[5.03,4.68],[5.1,4.37],[5.22,4.08],[5.39,3.82],[5.59,3.59],[5.82,3.39],[6.08,3.22],[6.37,3.1],[6.68,3.03],[7,3],[17,3],[17.32,3.03],[17.63,3.1],[17.92,3.22],[18.18,3.39],[18.41,3.59],[18.61,3.82],[18.78,4.08],[18.9,4.37],[18.97,4.68],[19,5],[19,21]]],
-  "package": [[[12,3],[20,7.5],[20,16.5],[12,21],[4,16.5],[4,7.5],[12,3]],[[12,12],[20,7.5]],[[12,12],[12,21]],[[12,12],[4,7.5]],[[16,5.25],[8,9.75]]],
-  "soup": [[[4,11],[20,11],[20.16,11.01],[20.32,11.05],[20.46,11.11],[20.59,11.19],[20.71,11.29],[20.81,11.41],[20.89,11.54],[20.95,11.68],[20.99,11.84],[21,12],[21,12.5],[20.93,13.02],[20.73,13.66],[20.42,14.39],[20.02,15.17],[19.56,15.96],[19.05,16.74],[18.52,17.47],[17.99,18.11],[17.47,18.63],[17,19],[17,20],[16.99,20.16],[16.95,20.32],[16.89,20.46],[16.81,20.59],[16.71,20.71],[16.59,20.81],[16.46,20.89],[16.32,20.95],[16.16,20.99],[16,21],[8,21],[7.84,20.99],[7.68,20.95],[7.54,20.89],[7.41,20.81],[7.29,20.71],[7.19,20.59],[7.11,20.46],[7.05,20.32],[7.01,20.16],[7,20],[7,19],[6.48,18.6],[5.94,18.06],[5.39,17.41],[4.86,16.69],[4.37,15.92],[3.92,15.13],[3.55,14.37],[3.25,13.65],[3.07,13.02],[3,12.5],[3,12],[3.01,11.84],[3.05,11.68],[3.11,11.54],[3.19,11.41],[3.29,11.29],[3.41,11.19],[3.54,11.11],[3.68,11.05],[3.84,11.01],[4,11],[4,11]],[[12,4],[11.82,4.15],[11.65,4.31],[11.5,4.49],[11.37,4.68],[11.25,4.88],[11.16,5.09],[11.09,5.31],[11.04,5.53],[11.01,5.76],[11,6],[11.01,6.24],[11.04,6.47],[11.09,6.69],[11.16,6.91],[11.25,7.12],[11.37,7.32],[11.5,7.51],[11.65,7.69],[11.82,7.85],[12,8]],[[16,4],[15.82,4.15],[15.65,4.31],[15.5,4.49],[15.37,4.68],[15.25,4.88],[15.16,5.09],[15.09,5.31],[15.04,5.53],[15.01,5.76],[15,6],[15.01,6.24],[15.04,6.47],[15.09,6.69],[15.16,6.91],[15.25,7.12],[15.37,7.32],[15.5,7.51],[15.65,7.69],[15.82,7.85],[16,8]],[[8,4],[7.82,4.15],[7.65,4.31],[7.5,4.49],[7.37,4.68],[7.25,4.88],[7.16,5.09],[7.09,5.31],[7.04,5.53],[7.01,5.76],[7,6],[7.01,6.24],[7.04,6.47],[7.09,6.69],[7.16,6.91],[7.25,7.12],[7.37,7.32],[7.5,7.51],[7.65,7.69],[7.82,7.85],[8,8]]],
-  "sun": [[[8,12],[8.05,12.65],[8.2,13.26],[8.45,13.84],[8.77,14.36],[9.17,14.83],[9.64,15.23],[10.16,15.55],[10.74,15.8],[11.35,15.95],[12,16],[12.65,15.95],[13.26,15.8],[13.84,15.55],[14.36,15.23],[14.83,14.83],[15.23,14.36],[15.55,13.84],[15.8,13.26],[15.95,12.65],[16,12],[15.95,11.35],[15.8,10.74],[15.55,10.16],[15.23,9.64],[14.83,9.17],[14.36,8.77],[13.84,8.45],[13.26,8.2],[12.65,8.05],[12,8],[11.35,8.05],[10.74,8.2],[10.16,8.45],[9.64,8.77],[9.17,9.17],[8.77,9.64],[8.45,10.16],[8.2,10.74],[8.05,11.35],[8,12]],[[3,12],[4,12]],[[12,3],[12,4]],[[20,12],[21,12]],[[12,20],[12,21]],[[5.6,5.6],[6.3,6.3]],[[18.4,5.6],[17.7,6.3]],[[17.7,17.7],[18.4,18.4]],[[6.3,17.7],[5.6,18.4]]],
-  "umbrella": [[[4,12],[4.1,10.7],[4.41,9.47],[4.89,8.32],[5.54,7.28],[6.34,6.34],[7.28,5.54],[8.32,4.89],[9.47,4.41],[10.7,4.1],[12,4],[13.3,4.1],[14.53,4.41],[15.68,4.89],[16.72,5.54],[17.66,6.34],[18.46,7.28],[19.11,8.32],[19.59,9.47],[19.9,10.7],[20,12],[4,12]],[[12,12],[12,18],[12.03,18.32],[12.1,18.63],[12.22,18.92],[12.39,19.18],[12.59,19.41],[12.82,19.61],[13.08,19.78],[13.37,19.9],[13.68,19.97],[14,20],[14.32,19.97],[14.63,19.9],[14.92,19.78],[15.18,19.61],[15.41,19.41],[15.61,19.18],[15.78,18.92],[15.9,18.63],[15.97,18.32],[16,18]]],
-};
-
-// 用 p5.brush 的 shape API 画图标（brush.beginShape/vertex/endShape）。
-// **不能用 raw canvas**：p5 2.x 每帧会用离屏合成重刷，直接往 canvas 画的内容
-// 下一帧就没了（红圆对照实验确认：p5 原生 circle 能出现，ctx.stroke 不能）。
-// **也不能用 bezierVertex**：场景里 p5.brush 接管了 shape，它只吃折线顶点。
-function _paintIcon(name, x, y, size, color, weight) {
-  const subs = ICON_POLYS[name];
-  if (!subs) return;
-  const k = size / 24;                 // viewBox 是 24×24
-  // 关键：**不用 p5 的 push/translate/scale + beginShape**。
-  // ① p5 原生 beginShape/vertex/endShape 在本引擎里画不出东西（图标一直"没有"）；
-  //    真正会落笔的是 brush.beginShape/brush.vertex/brush.endShape——core.js 里
-  //    所有笔画走的都是这一套，图标必须一致。
-  // ② 也不做 p5 变换：brush 的坐标走自己的几何管线，transform 是否生效没有保证。
-  //    直接把 24×24 的坐标手工映射到屏幕像素，最稳，且线宽 weight 就是屏幕像素。
-  const x0 = x - size / 2, y0 = y - size / 2;
-  const sw = weight || Math.max(2.6, size / 52);   // 实测 167px 图标配 3.2px 线宽最清楚
-  // 两遍描边：先用墨色粗笔打底，再用亮色细笔压在上面 → 得到"描边框"效果。
-  // 为什么要两遍：单遍亮色在浅色天空/土黄地面上对比度极低，实测几乎看不见；
-  // 深底+亮芯在深色山体和浅色天空上都能立住，不用为每个镜头单独挑颜色。
-  const pass = (col, w) => {
-    brush.noWash(); brush.noFill(); brush.noHatch();
-    brush.set('ink', col, w);
-    for (const pts of subs) {
-      brush.beginShape(0);
-      for (const p of pts) brush.vertex(x0 + p[0] * k, y0 + p[1] * k);
-      brush.endShape(false);          // false=开放折线，别闭合（闭合会把图标描成框）
-    }
-  };
-  pass(PAL.ink, sw * 1.6);
-  pass(color, sw * 1.0);
-}
-
-// 带底衬的图标：先铺半透明色块再描边，让图标在杂乱背景上有"重量"。
-// 半透明不能用 drawingContext.globalAlpha：p5 2.x 里 drawingContext 不是
-// CanvasRenderingContext2D，赋值无效（图标底衬会变成全不透明，糊住背景）。
-// 用 p5 自己的 fill(r,g,b,a) 传 alpha，走同一条渲染路径。
-function _paintIconSoft(name, x, y, size, ink, washCol, alpha) {
-  const c = color(washCol);
-  push();
-  noStroke();
-  fill(red(c), green(c), blue(c), 255 * (alpha == null ? .5 : alpha));
-  circle(x, y, size * .95);
-  pop();
-  _paintIcon(name, x, y, size, ink, 0);
-}
-
 """
 
 # ---------------------------------------------------------------- 渲染驱动
@@ -1020,7 +954,7 @@ def _kill_process_tree(pid: int) -> int:
         return 0
     if os.name == "nt":
         try:
-            r = run_hidden(
+            r = subprocess.run(
                 ["taskkill", "/T", "/F", "/PID", str(pid)],
                 capture_output=True, timeout=20,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -1049,7 +983,7 @@ def _headless_browser_pids() -> list[tuple[int, str]]:
         "ConvertTo-Json -Compress"
     )
     try:
-        r = run_hidden(
+        r = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
             capture_output=True, timeout=45, encoding="utf-8", errors="replace",
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -1101,7 +1035,7 @@ def purge_stale_browsers(exclude_pids: set[int] | None = None) -> int:
         if pid in keep:
             continue
         try:
-            run_hidden(
+            subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(pid)],
                 capture_output=True, timeout=15,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -1123,7 +1057,7 @@ def _run(cmd: list[str], cwd: Path, timeout: int = 900) -> tuple[int, str]:
     if os.name == "nt":
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
-        p = run_hidden(
+        p = subprocess.run(
             cmd, cwd=str(cwd), capture_output=True, timeout=timeout,
             encoding="utf-8", errors="replace", **kwargs,
         )
@@ -1158,6 +1092,9 @@ def _run_stream(cmd: list[str], cwd: Path, timeout: int = 900,
         )
     except FileNotFoundError as exc:
         return 127, f"找不到可执行文件：{cmd[0]}（{exc}）"
+    if not procguard.register(proc):
+        _kill_process_tree(proc.pid)
+        return 130, "已取消：正在运行的绘制进程已被释放"
 
     collected: list[str] = []
     lines: "queue.Queue[str | None]" = queue.Queue()
@@ -1204,6 +1141,7 @@ def _run_stream(cmd: list[str], cwd: Path, timeout: int = 900,
         _kill_process_tree(proc.pid)
         return proc.returncode, "\n".join(collected).strip()
     finally:
+        procguard.unregister(proc)
         if proc.stdout is not None:
             proc.stdout.close()
 
@@ -1347,6 +1285,10 @@ def render_shots(
     lyrics: list[dict[str, Any]] | None = None,
     size: tuple[int, int] = DEFAULT_SIZE,
     quality: str = DEFAULT_QUALITY,
+    frames_dir: Path | None = None,
+    subtitle_mode: str = "burn",
+    subtitle_offset: float = 0.0,
+    subtitle_lines: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """用引擎把分镜渲染成 MP4。
 
@@ -1385,7 +1327,9 @@ def render_shots(
             shots, out_dir, genre_label=genre_label, fps=fps,
             workers=workers, timeout=timeout, log=log, encode=encode,
             audio=audio, bpm=bpm, beat_offset=beat_offset, lyrics=lyrics,
-            size=size, quality=quality,
+            size=size, quality=quality, frames_dir=frames_dir,
+            subtitle_mode=subtitle_mode, subtitle_offset=subtitle_offset,
+            subtitle_lines=subtitle_lines,
         )
     finally:
         _progress_sink = None
@@ -1411,6 +1355,10 @@ def _render_shots_impl(
     lyrics: list[dict[str, Any]] | None = None,
     size: tuple[int, int] = DEFAULT_SIZE,
     quality: str = DEFAULT_QUALITY,
+    frames_dir: Path | None = None,
+    subtitle_mode: str = "burn",
+    subtitle_offset: float = 0.0,
+    subtitle_lines: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     def _say(msg: str) -> None:
         if callable(log):
@@ -1439,13 +1387,17 @@ def _render_shots_impl(
     # 避免每次渲染都新增一个场景文件把模板目录搞脏。
     work = work_dir()
     scene_path = work / "src" / "scenes" / "yiyyan.js"
-    # 有歌词就走逐字卡拉OK：场景自身的整句字幕必须关掉，否则两套字幕叠在一起
-    karaoke = bool(lyrics)
+    # 字幕呈现方式必须与合成层一致：none/sidecar 都不往画面里烧字。
+    # 以前这里无条件烧 caption_of(shot)，于是「不要字幕」照样出字、
+    # sidecar 变成画面+SRT 双份字幕，而偏移只作用于 SRT、画面停在 t=0。
+    burn, captions, karaoke, track = subtitle_plan(subtitle_mode, lyrics, subtitle_lines)
+    manual = subtitle_lines is not None
     scene_js = build_scene_js(shots, genre_label=genre_label, fps=fps,
-                              captions=not karaoke)
+                              captions=captions,
+                              subtitle_offset=subtitle_offset if burn else 0.0)
     config_js = build_config_js(duration, fps=fps, beat_bpm=bpm, beat_offset=beat_offset,
                                 size=size)
-    lyrics_js = build_lyrics_js(lyrics) if karaoke else ""
+    lyrics_js = build_lyrics_js(track, offset=subtitle_offset) if karaoke else ""
     quality_src = quality_js(quality)
     try:
         scene_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1474,22 +1426,31 @@ def _render_shots_impl(
                                         extra=lyrics_js + "\n--quality--\n" + quality_src),
                        log=_say)
     if karaoke:
-        _say(f"代码绘制：逐字卡拉OK 已启用（{len(lyrics or [])} 行歌词）")
+        _say(f"代码绘制：逐字卡拉OK 已启用（{len(track or [])} 行"
+             + ("人工字幕" if manual else "歌词") + "）")
+    elif not burn:
+        _say(f"代码绘制：字幕模式 {subtitle_mode}，画面不烧字幕")
 
     _say(f"代码绘制：开始渲染 {duration:.1f}s / {len(shots)} 镜（{fps}fps）…")
     # 浏览器路径必须**显式**传给 render.mjs：它只认CHROME_PATH 环境变量和
     # --chrome 参数，而自己的候选列表里没有 Windows 版Edge。踩过一次——
     # 体检全绿但渲染报 "Chrome not found"，就是因为只在体检里探测、没透传给渲染。
+    #
+    # 帧目录可以指定：预览的 fps/画布都与正式渲染不同，若共用模板目录下的
+    # out/frames，断点续渲会把两种规格的帧混在一起，编码出节奏错乱的视频。
+    frame_dir = Path(frames_dir) if frames_dir else work / "out" / "frames"
+    frame_arg = str(frame_dir).replace(os.sep, "/")
     code, output = render_with_retry(
         lambda: _run_stream(
             [_node_exe(), "render.mjs", "--frames",
              f"--chrome={st.browser}",
-             f"--workers={max(1, int(workers))}", f"--fps={int(fps)}"],
+             f"--workers={max(1, int(workers))}", f"--fps={int(fps)}",
+             f"--frames-dir={frame_arg}"],
             cwd=work, timeout=timeout,
         ),
         say=_say,
     )
-    frames_dir = work / "out" / "frames"
+    frames_dir = frame_dir
     rendered = len(list(frames_dir.glob("f*.jpg"))) if frames_dir.exists() else 0
     if code != 0:
         return {
@@ -1510,6 +1471,10 @@ def _render_shots_impl(
         }
 
     video = out_dir / "painted.mp4"
+    # 与合成层同一约定：母版先写临时文件再原子替换。直接往 painted.mp4 上写，
+    # 重绘期间它会被截断，历史/导出在这段时间拿不到片子；崩溃还会留下半截文件。
+    pending = out_dir / ".painted.pending.mp4"
+    pending.unlink(missing_ok=True)
     # FFmpeg 用项目自用的，和管线其他环节保持一致（用户不需要另装）
     ffmpeg = ROOT / "bin" / "ffmpeg.exe"
     ffmpeg = str(ffmpeg) if ffmpeg.exists() else (shutil.which("ffmpeg") or "ffmpeg")
@@ -1520,15 +1485,17 @@ def _render_shots_impl(
     if audio_path and not has_audio:
         _say(f"代码绘制：音轨不存在，已铺静音轨（{audio_path}）")
     code, enc_out = _run(
-        build_encode_args(frames_dir / "f%05d.jpg", video, int(fps), ffmpeg,
+        build_encode_args(frames_dir / "f%05d.jpg", pending, int(fps), ffmpeg,
                           audio=audio_path if has_audio else None),
         cwd=work, timeout=600)
-    if code != 0 or not video.exists():
+    if code != 0 or not pending.exists():
+        pending.unlink(missing_ok=True)
         return {
             "ok": False,
             "error": f"FFmpeg 合成失败（退出码 {code}）：{enc_out[-600:]}",
             "video": "", "frames": rendered, "has_audio": False, "audio": "",
         }
+    pending.replace(video)
 
     ms_per_frame = ms_per_frame_hint(output)
 
@@ -1578,6 +1545,9 @@ def apply_painted(
     workers: int | None = None,
     clean_frames_after: bool = False,
     quality: str = DEFAULT_QUALITY,
+    size: tuple[int, int] | None = None,
+    out_dir: Path | None = None,
+    frames_dir: Path | None = None,
 ) -> dict[str, Any]:
     """把 ``result["compose"]`` 就地换成代码绘制（水彩逐帧）版本。
 
@@ -1608,17 +1578,10 @@ def apply_painted(
         result.setdefault("notes", []).append("代码绘制：没有分镜数据，已跳过")
         return result
 
-    # 题材名必须用 pick_genre 归一化：brief["style"] 是「烟火气、暖色调、纪实风」
-    # 这种自由文本，而 GENRE_PALETTES 的键是「烟火美食」这类标准名——
-    # 直接拿 style 去查永远查不到，于是永远走默认蓝色调色板（实测踩过）。
-    # 标题也一起喂进去：题材判断靠标题往往比靠风格更准。
-    from .genre import pick_genre as _pick
-
-    _title = str((board.get("project") or {}).get("title") or "")
-    _style = str((result.get("brief") or {}).get("style") or "")
-    genre_label = _pick((_title + " " + _style).strip()).label if (_title or _style) else ""
+    genre_label = str((result.get("brief") or {}).get("style") or "")
     project_dir = Path(result.get("project_dir") or ROOT / "runs" / str(result.get("run_id") or ""))
-    out_dir = project_dir / "painted"
+    # 预览传入独立目录：低清产物不能覆盖正式成片，也不能与正式渲染共用帧缓存。
+    painted_dir = Path(out_dir) if out_dir is not None else project_dir / "painted"
     # 覆盖 comp 之前先把旧值取出来：原来的代码在 comp.update() 之后才读 old_video，
     # 那时它已经等于新视频，「原成片保留在…」这条 note 就永远写不出来（死代码）。
     comp_before = dict(result.get("compose") or {})
@@ -1628,9 +1591,16 @@ def apply_painted(
     bpm = float(music_info.get("bpm") or 0.0)
     beat_offset = float(music_info.get("offset") or 0.0)
     lyrics = list(result.get("lyrics") or [])
+    # 字幕设置随管线结果一起传下来：绘制版必须和占位帧版用同一套模式/偏移/人工轨，
+    # 否则「不要字幕」在绘制版里照样出字、偏移只改了 SRT 没改画面。
+    subtitle_cfg = result.get("subtitle") or {}
+    subtitle_mode = str(subtitle_cfg.get("mode") or "burn")
+    subtitle_offset = float(subtitle_cfg.get("offset") or 0.0)
+    subtitle_lines = subtitle_cfg.get("lines")
     # 画幅：引擎的画布尺寸由 config.js 下发（core.js 原来是写死的 1920×1080），
     # 所以竖屏/方形必须在这里读简报、一路传到 config.js 与 studio.html。
-    size = size_for_aspect(str((result.get("brief") or {}).get("aspect_ratio") or ""))
+    size = tuple(size) if size is not None else size_for_aspect(
+        str((result.get("brief") or {}).get("aspect_ratio") or ""))
     # 进度映射到 0.30~0.95，把前 30% 留给已经跑完的创意/决策/占位帧阶段
     _prog("代码绘制", 0.30)
 
@@ -1649,7 +1619,7 @@ def apply_painted(
 
     try:
         out = render_shots(
-            shots, out_dir,
+            shots, painted_dir,
             genre_label=genre_label,
             fps=fps,
             workers=workers if workers else default_workers(),
@@ -1663,6 +1633,10 @@ def apply_painted(
             lyrics=lyrics,
             size=size,
             quality=quality,
+            frames_dir=frames_dir,
+            subtitle_mode=subtitle_mode,
+            subtitle_offset=subtitle_offset,
+            subtitle_lines=subtitle_lines,
         )
     except Exception as exc:  # noqa: BLE001
         result.setdefault("notes", []).append(f"代码绘制失败，已保留原成片：{exc}")
@@ -1681,6 +1655,9 @@ def apply_painted(
     comp.update({
         "video": str(video),
         "size_mb": round(video.stat().st_size / 1048576, 2),
+        # 分辨率必须跟着实际画布走：预览是半尺寸，沿用上游合成时的全尺寸
+        # 会把"960×540 的预览"标成 1920×1080。
+        "resolution": f"{size[0]}x{size[1]}",
         "backend": "painted",
         "frames": out.get("frames", 0),
         "karaoke": bool(out.get("karaoke")),
@@ -1697,7 +1674,7 @@ def apply_painted(
     # 长片磁盘卫生：编码成功后帧缓存就没用了（3 分钟 1080p 约 2.4 GB）。
     # 默认不动，由调用方显式要求——万一还想换个音轨重编码，帧还在。
     if clean_frames_after:
-        clean_frames(log=lambda m: _log("info", m))
+        clean_frames(frames_dir, log=lambda m: _log("info", m))
     # 原成片保留但标为被替换，方便用户对照"占位帧版 vs 水彩版"
     if old_video and Path(old_video).exists() and Path(old_video) != video:
         result.setdefault("notes", []).append(

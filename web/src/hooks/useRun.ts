@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import {
+  ApiError,
   cancelRun,
   createRun,
   eventsUrl,
@@ -8,15 +9,19 @@ import {
   renderPlan,
   renderShot,
   recomposePlan,
+  previewPlan,
+  previewShot,
   type EnvPayload,
   type FormState,
+  type JobSnapshot,
   type RenderOptions,
   type RunAccepted,
   type RunResult,
 } from '../lib/api'
+import { authHeaders, guestHeaders } from '../lib/auth'
 import { readSse, sleep, type SseEvent } from '../lib/sse'
 
-export type Phase = 'idle' | 'running' | 'done' | 'error'
+export type Phase = 'idle' | 'running' | 'done' | 'canceled' | 'error' | 'rejected'
 
 export interface LogItem {
   key: number
@@ -92,10 +97,12 @@ export function useRun() {
           break
         }
         case 'done': {
-          setResult((data?.result ?? null) as RunResult | null)
+          const payload = (data?.result ?? null) as RunResult | null
+          const stopped = Boolean(payload?.stopped)
+          setResult(payload)
           setPct(1)
-          setStage('完成')
-          setPhase('done')
+          setStage(stopped ? '已停止' : '完成')
+          setPhase(stopped ? 'canceled' : 'done')
           break
         }
         case 'error': {
@@ -110,19 +117,69 @@ export function useRun() {
     [scheduleFlush],
   )
 
+  /** 用快照收尾：连接断了不代表任务失败，任务状态以服务端快照为准。 */
+  const applySnapshot = useCallback((snap: JobSnapshot) => {
+    const stopped = Boolean(snap.result?.stopped) || snap.status === 'canceled'
+    if (snap.result) {
+      setResult(snap.result)
+      setPct(1)
+      setStage(stopped ? '已停止' : '完成')
+      // 不能按“有没有 result”推断成功：取消也有部分产物，但状态是 canceled。
+      setPhase(stopped ? 'canceled' : 'done')
+    } else if (snap.status === 'interrupted') {
+      setError(snap.error || '服务重启，这次运行被中断')
+      setPhase('error')
+    } else if (snap.finished) {
+      setError(snap.error || '上次运行未产出成片')
+      setPhase('error')
+    }
+  }, [])
+
   const connect = useCallback(
     async (id: string) => {
       abortRef.current?.abort()
       const controller = new AbortController()
       abortRef.current = controller
       let attempt = 0
+      let earlyEnds = 0
 
       while (!controller.signal.aborted) {
         try {
-          await readSse(eventsUrl(id, cursorRef.current), handleEvent, controller.signal)
-          return
+          const outcome = await readSse(
+            eventsUrl(id, cursorRef.current),
+            handleEvent,
+            controller.signal,
+            { ...authHeaders(), ...guestHeaders() },
+          )
+          if (controller.signal.aborted) return
+          // 收到 done/error 才是真正结束。
+          if (outcome.terminal) return
+
+          // 流正常关闭却没有终态（代理截断、服务重启等）：先查快照。
+          // 以前这里直接 return，界面就永远停在「生成中」。
+          const snap = await getJob(id)
+          if (controller.signal.aborted) return
+          attempt = 0
+          if (snap.finished) {
+            applySnapshot(snap)
+            return
+          }
+          earlyEnds += 1
+          if (earlyEnds > 8) {
+            setError('事件流反复中断，但任务仍在运行；可稍后刷新页面继续查看')
+            setPhase('error')
+            return
+          }
+          setStage('正在恢复事件流…')
+          await sleep(Math.min(400 * earlyEnds, 3000))
         } catch (err) {
           if (controller.signal.aborted) return
+          // 404 = 任务真的不在了（服务重启），继续重连没有意义。
+          if (err instanceof ApiError && err.status === 404) {
+            setError('这条任务没有记录（可能是账号体系上线前的旧运行）')
+            setPhase('error')
+            return
+          }
           attempt += 1
           if (attempt > 6) {
             setError(err instanceof Error ? err.message : '事件流中断')
@@ -133,7 +190,7 @@ export function useRun() {
         }
       }
     },
-    [handleEvent],
+    [applySnapshot, handleEvent],
   )
 
   const begin = useCallback(
@@ -155,8 +212,11 @@ export function useRun() {
         sessionStorage.setItem(STORAGE_KEY, accepted.job_id)
         void connect(accepted.job_id)
       } catch (err) {
+        // 提交就被拒（预算闸、并发占用、参数不合法）：管线一步都没跑，
+        // 不能报成"已中断"——那会让用户以为已经拍了一部分。
         setError(err instanceof Error ? err.message : String(err))
-        setPhase('error')
+        setStage('待命')
+        setPhase('rejected')
       }
     },
     [connect],
@@ -181,6 +241,54 @@ export function useRun() {
   const startRecompose = useCallback(
     (runId: string, opts: RenderOptions = {}) => begin(() => recomposePlan(runId, opts)),
     [begin],
+  )
+
+  /** 低清预览：半分辨率快速出一版，用来核对时间轴/字幕/音轨。
+   *  与正式拍摄共用事件流，结果里会带 preview 标记。 */
+  const startPreview = useCallback(
+    (runId: string, opts: RenderOptions = {}) => begin(() => previewPlan(runId, opts)),
+    [begin],
+  )
+
+  /** 单镜低清预览：只出一镜片段，不重合成整片，也不动正式片段缓存。 */
+  const startShotPreview = useCallback(
+    (runId: string, shotId: number, opts: RenderOptions = {}) =>
+      begin(() => previewShot(runId, shotId, opts)),
+    [begin],
+  )
+
+  /** 从任务中心接回一条正在跑的任务。
+   *
+   * 与"刷新页面自动恢复"同一条路：先查快照，跑完的直接出结果，还在跑的再订阅。
+   * 区别是要先把上一个任务的日志与结果清掉，否则两条运行的记录会混在一起。
+   */
+  const attach = useCallback(
+    async (id: string) => {
+      abortRef.current?.abort()
+      cursorRef.current = 0
+      logsRef.current = []
+      setLogs([])
+      setResult(null)
+      setEnv(null)
+      setError('')
+      setPct(0)
+      setJobId(id)
+      sessionStorage.setItem(STORAGE_KEY, id)
+      try {
+        const snap = await getJob(id)
+        if (snap.finished) {
+          applySnapshot(snap)
+          return
+        }
+        setStage('恢复连接…')
+        setPhase('running')
+        void connect(id)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : '接不回这条任务')
+        setPhase('error')
+      }
+    },
+    [applySnapshot, connect],
   )
 
   const cancel = useCallback(async () => {
@@ -223,19 +331,14 @@ export function useRun() {
         const snap = await getJob(saved)
         if (cancelled) return
         setJobId(saved)
-        if (snap.result) {
-          setResult(snap.result)
-          setPct(1)
-          setStage('完成')
-          setPhase('done')
-        } else if (snap.finished) {
-          setError(snap.error || '上次运行未产出成片')
-          setPhase('error')
+        if (snap.finished) {
+          // 已经结束的任务不需要再接事件流；快照就是最终状态。
+          applySnapshot(snap)
         } else {
           setStage('恢复连接…')
           setPhase('running')
+          void connect(saved)
         }
-        void connect(saved)
       } catch {
         sessionStorage.removeItem(STORAGE_KEY)
       }
@@ -247,7 +350,7 @@ export function useRun() {
       abortRef.current?.abort()
       if (rafRef.current) cancelAnimationFrame(rafRef.current)
     }
-  }, [connect])
+  }, [applySnapshot, connect])
 
   return {
     phase,
@@ -256,12 +359,17 @@ export function useRun() {
     pct,
     logs,
     env,
+    // 设置页体检完把结果交回全局，顶栏的环境徽章才能跟着变。
+    publishEnv: setEnv,
     result,
     error,
     start,
     startPlan,
     startShot,
+    startShotPreview,
     startRecompose,
+    startPreview,
+    attach,
     cancel,
     reset,
   }

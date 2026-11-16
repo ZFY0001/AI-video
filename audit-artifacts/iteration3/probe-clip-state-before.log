@@ -1,0 +1,9 @@
+{
+  "sha_after_reload": "",
+  "key_match": false,
+  "clip_state": "stale",
+  "recompose": "RuntimeError",
+  "recompose_message": "镜 [1] 的画面/文案/渲染规格改过了，旧片段与当前分镜不一致，无法只重合成。请先整片重拍（会只重画变化的镜头）",
+  "single_shot": "RuntimeError",
+  "single_shot_message": "镜 [1] 的画面/文案/渲染规格改过了，但它们的片段还是旧的。单镜重拍不会替你重画这些镜头——请先整片重拍（只会重画变化的镜头），或逐镜重拍它们"
+}

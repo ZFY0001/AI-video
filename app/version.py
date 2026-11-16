@@ -79,67 +79,6 @@
          镜长与顺序把已有片段对齐后重拼。新增 `compose.fit_clip()`——长了裁尾、
          短了 `tpad=stop_mode=clone` 冻结末帧，编码参数必须与 `KenBurns.make_clip`
          一致（`concat_clips` 走 stream copy，不一致直接拼不上）
-  5.0  **出图/出片接入云端 + 修掉三个「提示词不生效」的老问题**。
-       - 新增 `CloudImageProvider`（智谱 CogView-4）：中文提示词直接可用，
-         1440×720，同步接口。此前这个类是桩，填了 Key 也不会调用
-       - 新增 `CloudVideoProvider`（智谱 CogVideoX-2）：图生视频，
-         1720×1080 / 5 秒，提交后轮询 `/async-result/{id}`，下载后
-         ffmpeg **裁掉底部 7% 去掉「AI生成」水印**再交本地合成
-       - **修 `compose_image_prompt` 丢弃 `visual`**：原来主体与动作取自
-         `genre.subjects` / `genre.actions`（中文模板词），而 `visual` 只被
-         当成 `stable_choice` 的哈希种子——**一个字都没进提示词**。所以
-         无论用户写什么，出图永远是模板那句「一碗热汤面 + 掀帘进门」。
-         现在改为：`visual` 原文放最前当主体，模板词退成追加修饰
-       - **修 `sanitize_input` 误洗描述**：它本是给「给我做一条方城烩面宣传片」
-         这类口语指令设计的（删时长词/删数字/按标点切段/丢短片段/无空格拼接），
-         用户写的画面描述被它洗成粘连词串。现在长度 >40 字或逗号 ≥2 个就原样返回
-       - **修 `theme` 截断**：`[:60]` → `[:300]`，且超长不再静默砍
-       - **修「真图被丢弃」**：`_make_clip` 无条件 `render_still` 重画示意图当背景，
-         `shot.frame_path` 里的真图从未被读取——日志写着"出图完成（comfy）"，
-         成片里却是色块。现在按 `shot.still_provider` 判断：真图放大当背景，
-         没有才重画；`require_real_image` 时无真图直接报错
-       - 新增「必须真图」开关（`require_real_image`，默认开）：为真时不挂占位帧，
-         云端不可用就明确报错，不再静默出色块
-       - 修 `tool_guard` 拦死云端：`deep_review` 镜头一律标 `stakes=high` 导致
-         每次付费调用都返回 confirm、静默降级 kenburns；勾了「必须真图」视为
-         已授权付费
-       - 修出片时狂弹终端窗口：新增 `pipeline/proc.py`，所有运行期子进程
-         （ffmpeg / ffprobe / node / mklink）统一隐藏控制台
-       - 修 `WinError 5` 崩溃：探测写完探针 png 要删，杀软占句柄导致
-         `unlink` 抛错把整条流程带崩；改为尽力删除、失败忽略
-       - 新增设备检测与体检报告（`pipeline/hardware.py` + `/api/device`）：
-         真实探测显卡/显存/CPU/内存/磁盘/WebView2/Python/Node/ComfyUI/云端连通性，
-         给出档位结论（sdxl / sd15 / none）与引导，可保存 `work/device-report.md`
-  6.0  **模型层做成可插拔 + 「谁在前」可配**。
-       - 新增 `pipeline/model_registry.py`：把「用哪家的哪个模型」变成配置。
-         每家带 label / base_url / key_env / image[] / video[]，每个模型带
-         price_cny / modes / max_res / durations / note
-       - 出图/出片 provider 同时支持智谱与 MiniMax：
-         · 智谱  `POST /images/generations` → `data[0].url`
-         · 智谱  `POST /videos/generations` → `GET /async-result/{id}`
-         · MiniMax `POST /v1/image_generation` → `data.image_urls[]`
-         · MiniMax `POST /v1/video_generation` → `/v1/query/video_generation`
-           → `/v1/files/retrieve`（三步，且未完成时业务码也是 0，
-           必须看 `status` 而不是 `status_code`）
-       - **设置页只要「一个地址 + 一个 Key」**：`VIDEO_API_BASE_URL` +
-         `VIDEO_API_KEY`，由 `detect_provider()` 按域名自动识别是哪家。
-         加第三家只需改两处（PROVIDERS 加一条、HOST_HINTS 加一行），
-         不用再给每个厂商加一个输入框
-       - 新增 `IMAGE_MODE`：cloud（默认，画质优先）/ local（省钱草稿优先）
-       - 新增 `GET /api/models`：当前生效组合 + 完整目录（含单价与分辨率）
-       - 修正两个连着的识别 bug：地址识别曾被 `IMAGE_PROVIDER` 的默认值挡住；
-         换家后 `model_id` 未重选，导致回落全局默认、等于白识别
-       - 分镜卡片加「查看发给模型的原文」折叠：默认只给中文，
-         展开能看到实际发出的 prompt（含追加的英文修饰），便于排查出图偏差
-       - README 修掉一个会让人跑不起来的错误：克隆后目录是 `AI-video`，
-         原文写的是 `cd 一言片场-V3`；同时补「你需要什么」与配 Key 的步骤
-       - 修 `proc.run` 两个参数缺陷：`**hidden_kwargs(), **kwargs` 双重展开
-         在调用方自带 `creationflags` 时炸（报 KeyError 而非 TypeError，极易误判）；
-         `encoding` 隐含 `text=True`，把 PCM 字节流解码成 str，
-         使节拍估计报「bytes-like object required」
-
-## 附：V6 之前的版本历史
-
        - 对齐结果写 `work/clips_fit/`，**绝不原地覆盖**源片段：重编码一次画质掉
          一次，裁短之后再也补不回来
        - 重合成复用配音：从 `work/vo/shotNN_raw.wav` 取上次的原始配音只重新
@@ -160,13 +99,13 @@
 from __future__ import annotations
 
 #: 语义化版本。首位变动 = 功能级变化（界面/链路），次位 = 修复与优化。
-__version__ = "6.0.0"
+__version__ = "4.5.0"
 
 #: 中文名（界面标题、日志用）
 APP_NAME = "一言片场"
 
 #: 简短版本标签（标题栏展示，例如「一言片场 V3」）
-VERSION_TAG = "V6"
+VERSION_TAG = "V4"
 
 #: 一句话定位
 TAGLINE = "AI 视频智能生产线"

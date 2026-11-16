@@ -50,6 +50,9 @@ class Subject:
     id: str
     name: str
     visual_lock: str = ""
+    #: 参考图资产（项目内相对路径、哈希、尺寸）。只作为素材存档与人工对照，
+    #: 当前出图后端不消费它；字段按字典透传，后端加字段时不必改这里。
+    reference: dict[str, Any] | None = None
 
 
 @dataclass
@@ -77,11 +80,34 @@ class Shot:
     quality: int = 0
     defect_type: str = "none"
     verdict: str = ""
+    #: 质检是怎么做的：simulated=规则演示（默认）/ technical=仅真实技术检查 /
+    #: vlm=多模态评审 / technical_failed=图片不可读。
+    #: 没有这个字段，界面就无法区分"流程跑通"和"画面真的被看过"。
+    review_mode: str = ""
+    #: 视觉结论是否真的经过检查：performed / not_performed / failed。
+    visual_check: str = ""
+    #: 打分规则版本与画面内容哈希，用于复查"这个分数基于哪一版规则、哪张图"。
+    review_rule: str = ""
+    image_sha256: str = ""
+    #: 技术检查的原始证据。以前只留了哈希，界面没法说明"图到底检查了什么"；
+    #: 尺寸/亮度/对比度是 inspect_image 实测值。None = 这次运行没有留下证据
+    #: （旧版本产物），不能当成"检查通过"。
+    tech_ok: bool | None = None
+    tech_reason: str = ""
+    image_width: int = 0
+    image_height: int = 0
+    image_mean: float = 0.0
+    image_contrast: float = 0.0
     frame_path: str = ""
-    #: 出这张静帧的 provider（comfy / offline / cloud）。
-    #: 合成时必须知道它是不是真图：offline 写出来的只是分镜示意图，
-    #: 拿它当背景等于白出了真图；而真图必须被用上（否则整条出图链路白跑）。
-    still_provider: str = ""
+    #: 选中帧来自哪个出图 provider，以及它是否已经是“干净背景”（不含文字）。
+    #: 本地运动视频只对干净图直接做 Ken Burns；占位帧必须重画无字背景，
+    #: 否则会把标题/字幕烘进背景再叠一遍。
+    frame_source: str = ""
+    frame_is_clean: bool = False
+    #: 选中的候选证据。每个候选都有自己的图像哈希/技术检查/评审模式，
+    #: 不能拿循环最后一次的状态代表最终选择。
+    evidence_id: str = ""
+    candidate_evidence: list[dict[str, Any]] = field(default_factory=list)
     intent_path: str = ""
     clip_path: str = ""
     start: float = 0.0
@@ -121,6 +147,25 @@ def shot_from_dict(data: dict[str, Any]) -> "Shot":
     shot.attempts = 0
     shot.quality = 0
     shot.verdict = ""
+    # 上一次运行的画面与证据不能带到下一次：被跳过的镜头会看起来“有证据”，
+    # 实际却是上一版图片。缓存命中时会由缓存记录明确恢复。
+    shot.frame_path = ""
+    shot.frame_source = ""
+    shot.frame_is_clean = False
+    shot.evidence_id = ""
+    shot.candidate_evidence = []
+    shot.image_sha256 = ""
+    shot.review_mode = ""
+    shot.visual_check = ""
+    shot.review_rule = ""
+    shot.tech_ok = None
+    shot.tech_reason = ""
+    shot.image_width = 0
+    shot.image_height = 0
+    shot.image_mean = 0.0
+    shot.image_contrast = 0.0
+    shot.clip_path = ""
+    shot.intent_path = ""
     return shot
 
 

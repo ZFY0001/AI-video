@@ -11,9 +11,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import time
-import urllib.error
-import urllib.request
 import subprocess
 import sys
 import tempfile
@@ -21,9 +18,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from . import procguard
+
 from .models import Shot
-from .net import describe_net_error, open_url
-from .proc import run as run_hidden
 
 _PROTECTED_DIRS = ("desktop", "documents", "pictures", "videos", "music", "favorites")
 
@@ -80,17 +77,45 @@ class VideoError(RuntimeError):
     pass
 
 
-def run_ffmpeg(args: list[str], timeout: int = 600) -> subprocess.CompletedProcess:
-    proc = run_hidden(
-        [FFMPEG, "-hide_banner", "-loglevel", "error", "-y", *args],
-        capture_output=True,
+def run_ffmpeg(args: list[str], timeout: int = 600, *,
+               cancellable: bool = True) -> subprocess.CompletedProcess:
+    """跑一次 FFmpeg。`cancellable=False` 用于与任务取消无关的派生编码（如导出）。
+
+    用 Popen 而不是 `subprocess.run`：只有拿到进程句柄才能登记到 procguard，
+    用户点停止时才有办法真正结束它，而不是等它自己跑完。
+    """
+    cmd = [FFMPEG, "-hide_banner", "-loglevel", "error", "-y", *args]
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
         encoding="utf-8",
         errors="replace",
-        timeout=timeout,
     )
-    if proc.returncode != 0:
-        err = (proc.stderr or "").strip()[:500]
+    if cancellable and not procguard.register(proc):
+        raise procguard.ProcessCancelled("已取消：正在运行的 FFmpeg 已被释放")
+    try:
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            procguard.kill_tree(proc.pid)
+            try:
+                stdout, stderr = proc.communicate(timeout=5)
+            except (subprocess.TimeoutExpired, OSError, ValueError):
+                stdout, stderr = "", ""
+            raise VideoError(
+                f"FFmpeg 超时（>{timeout}s）：{(stderr or '').strip()[:300]}"
+            ) from None
+        returncode = proc.returncode
+        stdout = stdout or ""
+        stderr = stderr or ""
+    finally:
+        if cancellable:
+            procguard.unregister(proc)
+
+    if returncode != 0:
+        err = stderr.strip()[:500]
         hint = ""
         # 区分「文件真的不在」与「ffmpeg 根本无权访问磁盘」——后者是环境问题，
         # 报成 No such file 会把人引向错误方向（实测踩过：受限终端里两者都像缺文件）。
@@ -102,12 +127,12 @@ def run_ffmpeg(args: list[str], timeout: int = 600) -> subprocess.CompletedProce
                 "部分受限终端（含沙箱）会把「无权读取」也报成 No such file，"
                 "请在普通 PowerShell 或 CMD 中重试"
             )
-        raise VideoError(f"FFmpeg 失败（{proc.returncode}）：{err}{hint}")
-    return proc
+        raise VideoError(f"FFmpeg 失败（{returncode}）：{err}{hint}")
+    return subprocess.CompletedProcess(cmd, returncode, stdout, stderr)
 
 
 def run_ffprobe(args: list[str], timeout: int = 60) -> dict:
-    proc = run_hidden(
+    proc = subprocess.run(
         [FFPROBE, "-hide_banner", "-loglevel", "error", "-print_format", "json", *args],
         capture_output=True,
         text=True,
@@ -135,7 +160,7 @@ def ffmpeg_available() -> tuple[bool, str]:
     which 会返回 None 从而误报不可用。这里直接尝试执行已解析出的真实路径。
     """
     try:
-        proc = run_hidden(
+        proc = subprocess.run(
             [FFMPEG, "-version"], capture_output=True, text=True,
             encoding="utf-8", errors="replace", timeout=20,
         )
@@ -147,23 +172,6 @@ def ffmpeg_available() -> tuple[bool, str]:
         return False, "PATH 中找不到 ffmpeg（可把 ffmpeg.exe 放到项目 bin/ 目录）"
     except Exception as exc:  # noqa: BLE001
         return False, str(exc)
-
-
-def _quiet_unlink(path: Path) -> None:
-    """尽力删除，失败就算了。
-
-    为什么不能直接 `path.unlink()`：探针 png 刚被 ffmpeg 写完时，杀软
-    （Defender 实时防护）常会短暂持有句柄，此时 unlink 抛
-    `PermissionError: [WinError 5] 拒绝访问`。
-
-    这个文件只是**探测用的临时物**，删不掉完全不影响"能不能写盘"的结论；
-    但如果异常逃出去，整条出片流程会因为一句清理动作直接中断——
-    实测就发生过：探测已成功，流程却死在 unlink 上。
-    """
-    try:
-        path.unlink(missing_ok=True)
-    except OSError:
-        pass
 
 
 def ffmpeg_filesystem_accessible() -> tuple[bool, str]:
@@ -187,7 +195,7 @@ def ffmpeg_filesystem_accessible() -> tuple[bool, str]:
         except Exception as exc:  # noqa: BLE001
             tried.append(f"{tmp_dir}（建目录失败：{type(exc).__name__}）")
             continue
-        _quiet_unlink(probe)
+        probe.unlink(missing_ok=True)
         try:
             run_ffmpeg(
                 ["-f", "lavfi", "-i", "color=c=black:s=16x16:d=1",
@@ -197,16 +205,16 @@ def ffmpeg_filesystem_accessible() -> tuple[bool, str]:
                 timeout=15,
             )
         except VideoError as exc:
-            _quiet_unlink(probe)
+            probe.unlink(missing_ok=True)
             first = str(exc).split("｜")[0].splitlines()[0][:110]
             tried.append(f"{tmp_dir}（{first}）")
             continue
         except Exception as exc:  # noqa: BLE001
-            _quiet_unlink(probe)
+            probe.unlink(missing_ok=True)
             tried.append(f"{tmp_dir}（{type(exc).__name__}: {str(exc)[:70]}）")
             continue
         ok = probe.exists() and probe.stat().st_size > 0
-        _quiet_unlink(probe)
+        probe.unlink(missing_ok=True)
         if ok:
             return True, f"FFmpeg 可正常读写磁盘（探测位置：{tmp_dir}）"
         tried.append(f"{tmp_dir}（命令成功但文件未生成，多半被杀软拦截）")
@@ -339,242 +347,27 @@ def _kenburns_filter(kind: str, frames: int, w: int, h: int, work: int = 2,
 # ------------------------------------------------------------------ 云端
 @dataclass
 class CloudVideoProvider:
-    """智谱 CogVideoX 图生视频（云端）。
+    """云端图生视频（混元 / 可灵 / 即梦等）。未配置端点一律拒绝执行。"""
 
-    **为什么必须要有它**：本地 SD 1.5 的文本编码器只认英文，而分镜描述是中英混杂
-    （"一碗热汤面 (烟火美食), 掀帘进门, hand-pulled noodles mid-air"）——中文那半
-    完全不起作用，实测"掀帘进门"根本没进画面。CogVideoX 是中文语料训练的，
-    且输出 1080p。
-
-    **水印**：智谱所有输出都带右下角"AI生成"（文件名 `_watermark.mp4`），
-    所以下载后裁掉底部 `crop_bottom`（默认 7%），再缩放回目标尺寸。
-
-    **接口**（实测 2026-10-24）：
-        提交 POST {base}/videos/generations   {model, prompt, image_url}
-        查询 GET  {base}/async-result/{id}    ← 不是 /videos/generations/{id}
-        结果 video_result[0].url
-    """
-
-    #: 用哪家：zhipu / minimax。两家的提交、轮询、取文件接口完全不同
-    provider: str = "zhipu"
-    base_url: str = ""
-    api_key: str = ""
-    model: str = "cogvideox-2"
-    poll_timeout: int = 300
-    #: 底部裁掉比例（去"AI生成"水印）。0 表示不裁。
-    crop_bottom: float = 0.07
+    base_url: str
+    api_key: str
     provider_id: str = ""
     name: str = "cloud"
 
-    def _url(self, path: str) -> str:
-        return (self.base_url or "").rstrip("/") + path
-
     def available(self) -> tuple[bool, str]:
         if not self.base_url or not self.api_key:
-            return False, f"未配置 {self.provider} 的端点与 Key"
-        label = {"minimax": "MiniMax", "zhipu": "智谱"}.get(self.provider, self.provider)
-        return True, f"{label} {self.model}（图生视频，自动裁水印）"
-
-    def _image_b64(self, still: Path) -> str:
-        import base64
-        import io
-
-        from PIL import Image
-
-        raw = still.read_bytes()
-        # base64 会膨胀 33%，控制在 ~1MB 以内，避免请求体过大
-        if len(raw) > 900_000:
-            buf = io.BytesIO()
-            with Image.open(still) as im:
-                im.convert("RGB").thumbnail((960, 960), Image.LANCZOS)
-                im.save(buf, "JPEG", quality=88)
-            raw = buf.getvalue()
-        return "data:image/jpeg;base64," + base64.b64encode(raw).decode()
-
-    def _submit(self, prompt: str, still: Path) -> str:
-        body = {"model": self.model, "prompt": prompt, "image_url": self._image_b64(still)}
-        req = urllib.request.Request(
-            self._url("/videos/generations"), data=json.dumps(body).encode(), method="POST",
-            headers={"Authorization": "Bearer " + self.api_key, "Content-Type": "application/json"},
-        )
-        data: dict = {}
-        # 同 images.py：429 是账户级限流，连续多镜必然遇到，退避重试
-        for attempt in range(4):
-            try:
-                with open_url(req, timeout=60) as r:
-                    data = json.loads(r.read() or b"{}")
-                break
-            except urllib.error.HTTPError as exc:
-                if exc.code == 429 and attempt < 3:
-                    time.sleep(10 * (attempt + 1))
-                    # 请求体要重新构造：Request 对象被读过一次后不能复用
-                    req = urllib.request.Request(
-                        self._url("/videos/generations"), data=json.dumps(body).encode(), method="POST",
-                        headers={"Authorization": "Bearer " + self.api_key,
-                                 "Content-Type": "application/json"},
-                    )
-                    continue
-                raise VideoError("云端提交失败：" + describe_net_error(
-                    self._url("/videos/generations"), exc)) from exc
-            except Exception as exc:  # noqa: BLE001
-                raise VideoError("云端提交失败：" + describe_net_error(
-                    self._url("/videos/generations"), exc)) from exc
-        task_id = data.get("id")
-        if not task_id:
-            raise VideoError("云端未返回任务 id：" + json.dumps(data, ensure_ascii=False)[:200])
-        return str(task_id)
-
-    def _wait(self, task_id: str) -> str:
-        t0 = time.time()
-        last = ""
-        while time.time() - t0 < self.poll_timeout:
-            req = urllib.request.Request(
-                self._url(f"/async-result/{task_id}"),
-                headers={"Authorization": "Bearer " + self.api_key},
-            )
-            try:
-                with open_url(req, timeout=40) as r:
-                    data = json.loads(r.read() or b"{}")
-            except Exception:  # noqa: BLE001
-                time.sleep(5)
-                continue
-            status = (data.get("task_status") or "").upper()
-            last = status or last
-            if status == "SUCCESS":
-                url = ((data.get("video_result") or [{}])[0] or {}).get("url")
-                if not url:
-                    raise VideoError("云端任务成功但没有返回视频 URL")
-                return str(url)
-            if status in ("FAIL", "FAILED"):
-                raise VideoError("云端渲染失败：" + json.dumps(data, ensure_ascii=False)[:200])
-            time.sleep(5)
-        raise VideoError(f"云端渲染超时（{self.poll_timeout} 秒，最后状态 {last or '未知'}）")
+            return False, "未配置云端视频 API（VIDEO_API_BASE_URL / VIDEO_API_KEY）"
+        return False, "云端视频适配器待接入：接入前所有付费调用都会被拒绝"
 
     def make_clip(self, shot: Shot, still: Path, out_path: Path, duration: float) -> Path:
-        prompt = (shot.prompt_image or shot.visual or "").strip() or "cinematic shot"
-        if self.provider == "minimax":
-            task_id = self._mm_submit(prompt, still, duration)
-            url = self._mm_wait(task_id)
-        else:
-            task_id = self._submit(prompt, still)
-            url = self._wait(task_id)
-
-        raw_out = out_path.parent / (out_path.stem + "_cloud_raw.mp4")
-        try:
-            with open_url(urllib.request.Request(url), timeout=240) as r:
-                raw_out.write_bytes(r.read())
-        except Exception as exc:  # noqa: BLE001
-            raise VideoError("云端视频下载失败：" + describe_net_error(url, exc)) from exc
-
-        # 裁水印 → 缩放 → 截到本镜时长。云端是 1720x1080/5.1s，本地成片要 1920x1080
-        w, h = 1920, 1080
-        keep = max(0.5, 1.0 - float(self.crop_bottom))
-        vf = (f"crop=iw:ih*{keep:.4f}:0:0,"
-              f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}")
-        try:
-            run_ffmpeg([
-                "-i", str(raw_out), "-vf", vf, "-t", f"{duration:.2f}",
-                "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-                str(out_path),
-            ], timeout=180)
-        finally:
-            raw_out.unlink(missing_ok=True)
-        return out_path
-
-    # ---------------------------------------------------------- MiniMax
-    # 三步入库，和智谱完全不同：
-    #   ① POST /v1/video_generation        → task_id
-    #   ② GET  /v1/query/video_generation  → status + file_id
-    #   ③ GET  /v1/files/retrieve          → file.download_url
-
-    def _mm_submit(self, prompt: str, still: Path, duration: float) -> str:
-        body = {
-            "model": self.model,
-            "prompt": prompt,
-            "first_frame_image": self._image_b64(still),
-            # MiniMax 只认 6 或 10 秒；镜长不足 6 秒也按 6 秒生成，后面再裁
-            "duration": 6 if duration <= 6 else 10,
-            "resolution": "768P" if self.model.startswith("MiniMax-Hailuo") else "720P",
-        }
-        url = self._url("/v1/video_generation")
-        data: dict = {}
-        for attempt in range(4):
-            req = urllib.request.Request(
-                url, data=json.dumps(body).encode(), method="POST",
-                headers={"Authorization": "Bearer " + self.api_key, "Content-Type": "application/json"},
-            )
-            try:
-                with open_url(req, timeout=90) as r:
-                    data = json.loads(r.read() or b"{}")
-                break
-            except urllib.error.HTTPError as exc:
-                if exc.code == 429 and attempt < 3:
-                    time.sleep(10 * (attempt + 1))
-                    continue
-                raise VideoError("MiniMax 提交失败：" + describe_net_error(url, exc)) from exc
-            except Exception as exc:  # noqa: BLE001
-                raise VideoError("MiniMax 提交失败：" + describe_net_error(url, exc)) from exc
-
-        base_resp = data.get("base_resp") or {}
-        if base_resp.get("status_code") not in (0, "0", None):
-            raise VideoError(f"MiniMax 拒绝任务：{base_resp.get('status_msg') or data}")
-        task_id = data.get("task_id")
-        if not task_id:
-            raise VideoError("MiniMax 未返回 task_id：" + json.dumps(data, ensure_ascii=False)[:200])
-        return str(task_id)
-
-    def _mm_wait(self, task_id: str) -> str:
-        """轮询到 Success，再换下载链接。未完成时业务码是 0 且 status 为
-        Queueing/Processing/Preparing，所以不能只看 status_code。"""
-        t0 = time.time()
-        last = ""
-        while time.time() - t0 < self.poll_timeout:
-            q = self._url("/v1/query/video_generation?task_id=" + task_id)
-            try:
-                req = urllib.request.Request(q, headers={"Authorization": "Bearer " + self.api_key})
-                with open_url(req, timeout=40) as r:
-                    data = json.loads(r.read() or b"{}")
-            except Exception:  # noqa: BLE001
-                time.sleep(5)
-                continue
-            status = str(data.get("status") or "").lower()
-            last = status or last
-            if status in ("success", "succeeded"):
-                file_id = str(data.get("file_id") or "")
-                if not file_id:
-                    raise VideoError("MiniMax 成功但没给 file_id：" + json.dumps(data, ensure_ascii=False)[:200])
-                return self._mm_file_url(file_id)
-            if status in ("fail", "failed"):
-                raise VideoError("MiniMax 渲染失败：" + json.dumps(data, ensure_ascii=False)[:200])
-            time.sleep(5)
-        raise VideoError(f"MiniMax 渲染超时（{self.poll_timeout} 秒，最后状态 {last or '未知'}）")
-
-    def _mm_file_url(self, file_id: str) -> str:
-        q = self._url("/v1/files/retrieve?file_id=" + file_id)
-        req = urllib.request.Request(q, headers={"Authorization": "Bearer " + self.api_key})
-        try:
-            with open_url(req, timeout=40) as r:
-                data = json.loads(r.read() or b"{}")
-        except Exception as exc:  # noqa: BLE001
-            raise VideoError("MiniMax 取文件链接失败：" + describe_net_error(q, exc)) from exc
-        url = ((data.get("file") or {}).get("download_url")) or ""
-        if not url:
-            raise VideoError("MiniMax 没返回 download_url：" + json.dumps(data, ensure_ascii=False)[:200])
-        return str(url)
+        raise VideoError("云端视频生成未启用")
 
 
 def build_video_chain(settings, width: int, height: int) -> list[VideoProvider]:
     chain: list[VideoProvider] = []
-    from . import model_registry
-
-    vid_provider, vid_model, _vid_meta = model_registry.resolve(settings, "video")
-    prov_meta = model_registry.get_provider(vid_provider) or {}
-    key_name = str(prov_meta.get("key_env") or "VIDEO_API_KEY")
-    vid_key = str(settings.get(key_name) or settings.get("VIDEO_API_KEY") or "")
-    vid_base = str(settings.get(vid_provider.upper() + "_BASE_URL")
-                   or prov_meta.get("base_url") or settings.get("VIDEO_API_BASE_URL") or "")
-    cloud = CloudVideoProvider(provider=vid_provider, base_url=vid_base,
-                               api_key=vid_key, model=vid_model)
+    cloud = CloudVideoProvider(
+        base_url=settings.get("VIDEO_API_BASE_URL"), api_key=settings.get("VIDEO_API_KEY")
+    )
     ok, _why = cloud.available()
     if ok:
         chain.append(cloud)

@@ -16,7 +16,9 @@ import time
 import uuid
 from typing import Any, Iterator
 
-from app.engine import Engine, RunOptions
+from app.engine import Engine, RunOptions, render_profile_of
+
+from . import taskstore
 
 #: 事件缓冲上限。超过就丢最老的（日志是过程记录，丢老的不影响当前状态）
 MAX_BUFFER = 500
@@ -48,14 +50,21 @@ class Job:
     而 `POST /runs` 必须立刻返回一个标识给前端去订阅事件——那时 run_id 还不存在。
     """
 
-    def __init__(self, theme: str, opts: RunOptions, owner_id: int = 0) -> None:
+    def __init__(self, theme: str, opts: RunOptions, principal: Any = None,
+                 kind: str = "create") -> None:
         self.job_id = uuid.uuid4().hex[:12]
         self.theme = theme
         self.opts = opts
-        #: 发起人。0 = 游客。run_id 要等管线在工作线程里生成，所以归属
-        #: 只能在完成回调里落库（见 _record_owner）
-        self.owner_id = int(owner_id or 0)
+        #: 任务种类：create / plan / shot / recompose。任务中心据此说明"这次在干什么"。
+        self.kind = str(kind or "create")
+        #: 发起人（账号或访客）。任务接口一律按它鉴权；没有主体就不该有任务。
+        #: 归属落库分两处：拍摄入口在起任务前就有 run_id，先写；一次跑完的
+        #: 任务要等管线在工作线程里生成 run_id，只能在完成回调里补写。
+        self.principal = principal
+        self.owner_key = principal.key if principal is not None else ""
+        self.run_id = str(getattr(opts, "run_id", "") or "")
         self.created = time.time()
+        self.updated = self.created
         self.seq = 0
         self.buffer: list[tuple[int, str, dict]] = []
         self._cond = threading.Condition()
@@ -65,11 +74,64 @@ class Job:
         self.result: dict | None = None
         self.engine: Engine | None = None
         self.cancel_requested = False
+        #: 状态落库失败时只提示一次，不刷屏——重试也解决不了磁盘只读。
+        self._persist_error = ""
+        self._persist_warned = False
+        self._stored = False
+        self._persist_create()
+
+    def _persist_create(self) -> None:
+        if self.principal is None:
+            return
+        try:
+            taskstore.create_task(
+                self.job_id, self.owner_key, self.theme, self.kind,
+                run_id=self.run_id, options=self.options(),
+            )
+            self._stored = True
+        except taskstore.TaskStoreUnavailable as exc:
+            self._persist_error = str(exc)
+
+    def _persist(self, **fields: Any) -> None:
+        """状态落库尽力而为：写失败只警告，不打断正在跑的渲染。"""
+        if not self._stored:
+            return
+        try:
+            taskstore.update_task(self.job_id, **fields)
+        except (taskstore.TaskStoreUnavailable, ValueError) as exc:
+            if self._persist_warned:
+                return
+            self._persist_warned = True
+            self._emit("log", {
+                "level": "warn",
+                "msg": f"任务状态无法写盘，重启后这次运行可能不在任务中心里：{exc}",
+                "ts": time.time(),
+            })
+
+    @property
+    def status(self) -> str:
+        if not self.finished:
+            return "running"
+        if self.failed:
+            return "failed"
+        if isinstance(self.result, dict) and self.result.get("stopped"):
+            return "canceled"
+        return "done"
+
+    def options(self) -> dict:
+        return {
+            **render_profile_of(self.opts),
+            "only_shot": int(self.opts.only_shot or 0),
+            "recompose": bool(self.opts.recompose),
+            "palette": str(self.opts.palette or "auto"),
+            "snapshot_id": str(getattr(self.opts, "snapshot_id", "") or ""),
+        }
 
     # ---------------------------------------------------------------- 事件
     def _emit(self, kind: str, data: dict) -> None:
         payload = jsonable(data)
         with self._cond:
+            self.updated = time.time()
             self.buffer.append((self.seq, kind, payload))
             self.seq += 1
             if len(self.buffer) > MAX_BUFFER + 100:
@@ -95,37 +157,113 @@ class Job:
             },
         )
 
+    def _publish_master(self) -> None:
+        """把本次成功产物发布为项目当前母版。
+
+        只在正式运行（非预览、非单镜预览）且确有视频时发布。发布失败不把
+        已经产出的成片判失败，但要在事件流里显式说明——否则历史/导出会继续
+        读到上一版，用户会以为新片没生效。
+        """
+        if not isinstance(self.result, dict) or self.opts.preview:
+            return
+        project_dir = str(self.result.get("project_dir") or "")
+        compose = self.result.get("compose") if isinstance(self.result.get("compose"), dict) else {}
+        video = str(compose.get("video") or "")
+        if not project_dir or not video:
+            return
+        try:
+            from pathlib import Path
+
+            from .artifacts import publish_master
+
+            manifest = publish_master(
+                Path(project_dir), video,
+                backend=str(compose.get("backend") or "kenburns"),
+                job_id=self.job_id,
+                snapshot_id=str(getattr(self.opts, "snapshot_id", "") or ""),
+            )
+            self.result["master"] = manifest
+            self.result["snapshot_id"] = manifest.get("snapshot_id") or ""
+        except Exception as exc:  # noqa: BLE001
+            self._emit("log", {
+                "level": "error",
+                "msg": f"当前母版发布失败，历史与导出可能仍读到上一版：{exc}",
+                "ts": time.time(),
+            })
+            self.result.setdefault("notes", []).append(
+                f"当前母版发布失败：{exc}；成片文件已生成，但历史/导出可能仍指向上一版"
+            )
+
     def _on_done(self, result: dict) -> None:
         self.result = jsonable(result)
+        self.result["snapshot_id"] = str(getattr(self.opts, "snapshot_id", "") or "")
         self._record_owner(result)
+        self._publish_master()
+        # 落库放在发事件之前：前端收到 done 就会开播，此时记录必须已经能查到，
+        # 否则任务中心刷新一下会短暂显示"还在跑"。
+        stopped = isinstance(self.result, dict) and bool(self.result.get("stopped"))
+        self._persist(
+            run_id=self.run_id or str((self.result or {}).get("run_id") or ""),
+            status="canceled" if stopped else "done",
+            result=self.result,
+            video=self.video,
+        )
         self._emit("done", {"result": self.result})
         with self._cond:
             self.finished = True
             self._cond.notify_all()
 
+    def _on_start(self, run_id: str) -> None:
+        """生成开始前的归属前置。
+
+        归属失败必须中止任务，而不是只留警告继续出片：一次数据库抖动之后，
+        后来成功补写归属的路径并不存在，项目会永久变成“公共旧项目”。
+        这里抛出异常，由 Engine 在调用生成器之前终止。
+        """
+        self.run_id = str(run_id or "")
+        self._persist(run_id=self.run_id)
+        if self.principal is None or not self.run_id:
+            return
+        try:
+            from .auth import record_owner
+
+            record_owner(self.run_id, self.principal)
+        except Exception as exc:  # noqa: BLE001
+            self._emit("log", {
+                "level": "error",
+                "msg": f"归属登记失败，已中止生成：{exc}",
+                "ts": time.time(),
+            })
+            raise
+
     def _record_owner(self, result: object) -> None:
         """把 run_id 与发起人写进 run_owners。
 
         为什么在这里做：`run_id` 由管线在工作线程里生成，`POST /runs` 那一刻
-        还不存在，所以没法在创建时写。失败只记警告——归属丢了顶多成片进不了
-        "我的作品"，不该影响任务本身成功。
+        还不存在，所以没法在创建时写。失败**不再静默**——在事件流里留一条警告，
+        否则归属丢了只会表现为"成片突然变成公共的"。
         """
-        if not self.owner_id:
+        if self.principal is None:
             return
         try:
             from pathlib import Path
 
-            from .auth import record_run_owner
+            from .auth import record_owner
 
             project_dir = (result or {}).get("project_dir") if isinstance(result, dict) else None
             if not project_dir:
                 return
-            record_run_owner(Path(str(project_dir)).name, self.owner_id)
-        except Exception:  # noqa: BLE001
-            pass
+            record_owner(Path(str(project_dir)).name, self.principal)
+        except Exception as exc:  # noqa: BLE001
+            self._emit("log", {
+                "level": "warn",
+                "msg": f"归属记录失败，这条成片可能不会出现在「我的作品」里：{exc}",
+                "ts": time.time(),
+            })
 
     def _on_error(self, msg: str) -> None:
         self.error = str(msg)
+        self._persist(status="failed", error=self.error)
         self._emit("error", {"message": self.error})
         with self._cond:
             self.failed = True
@@ -144,17 +282,32 @@ class Job:
             return ""
         return str((self.result.get("compose") or {}).get("video") or "")
 
+    def visible_to(self, principal: Any) -> bool:
+        """任务可见性。空 owner_key 只可能来自旧的内存任务，一律拒绝。"""
+        if not self.owner_key or principal is None:
+            return False
+        return self.owner_key == principal.key
+
     def snapshot(self) -> dict:
         return {
             "job_id": self.job_id,
+            "run_id": self.run_id,
             "theme": self.theme,
+            "kind": self.kind,
+            "status": self.status,
             "running": self.running,
             "finished": self.finished,
             "failed": self.failed,
             "error": self.error,
+            "created": self.created,
+            "updated": self.updated,
+            "has_video": bool(self.video),
             "cursor": self.seq,
             "video": self.video,
             "result": self.result,
+            # 实际生效的渲染配置。界面据此确认"我选的是离线 + 代码绘制"，
+            # 而不是等出片后从画风上猜。
+            "options": self.options(),
         }
 
     def stream(self, cursor: int = 0) -> Iterator[tuple[int, str, dict]]:
@@ -193,22 +346,36 @@ class Job:
             on_env=self._on_env,
             on_done=self._on_done,
             on_error=self._on_error,
+            on_start=self._on_start,
         )
         self.engine = engine
         return engine
 
     def start(self) -> bool:
+        if self._persist_error:
+            self._emit("log", {
+                "level": "warn",
+                "msg": f"任务状态无法落库，重启后这次运行不会出现在任务中心：{self._persist_error}",
+                "ts": time.time(),
+            })
         self._emit("progress", {"stage": "准备", "pct": 0.0})
         engine = self.build_engine()
         return engine.start(self.opts)
 
     def cancel(self) -> None:
-        """请求停止。管线在下一个镜头边界退出，已完成镜头照常进成片。"""
+        """请求停止。
+
+        会立即结束正在运行的子进程（FFmpeg / node 绘制），并让管线在下一个
+        镜头边界退出；已完成的镜头照常保留，不会被删除。
+        """
         self.cancel_requested = True
         if self.engine:
             self.engine.cancel()
-        self._emit("log", {"level": "warn", "msg": "已发出停止请求，等待跑到镜头边界…",
-                           "ts": time.time()})
+        self._emit("log", {
+            "level": "warn",
+            "msg": "已请求停止：正在运行的子进程会被释放，已完成的镜头仍保留",
+            "ts": time.time(),
+        })
 
 
 class BusyError(RuntimeError):
@@ -224,14 +391,45 @@ class JobRegistry:
         self._order: list[str] = []
         self._keep = keep
         self._active: str | None = None
+        #: 接纳中的任务预留。归属登记、快照冻结等前置写入在这段时间内完成；
+        #: 没有它，两条请求都能通过"当前空闲"检查，后完成的前置写入会在
+        #: Registry 拒绝第二条任务时已经污染第一条的快照。
+        self._reserved: str | None = None
 
-    def create(self, theme: str, opts: RunOptions, owner_id: int = 0) -> Job:
+    def reserve(self) -> str:
+        """预留唯一执行槽位。失败抛 BusyError，不做任何文件写入。"""
         with self._lock:
+            if self._reserved:
+                raise BusyError("已有任务正在接纳，请稍后重试")
             if self._active:
                 current = self._jobs.get(self._active)
                 if current and current.running:
                     raise BusyError("已有任务在运行，请等待完成或先停止")
-            job = Job(theme, opts, owner_id=owner_id)
+            token = uuid.uuid4().hex
+            self._reserved = token
+            return token
+
+    def release(self, token: str | None) -> None:
+        with self._lock:
+            if token and self._reserved == token:
+                self._reserved = None
+
+    def create(self, theme: str, opts: RunOptions, principal: Any = None,
+               kind: str = "create", reservation: str | None = None) -> Job:
+        if principal is None:
+            raise BusyError("缺少访客凭据，无法创建任务")
+        with self._lock:
+            if reservation is not None:
+                if self._reserved != reservation:
+                    raise BusyError("任务预留已失效，请重新发起")
+            elif self._reserved:
+                raise BusyError("已有任务正在接纳，请稍后重试")
+            if self._active:
+                current = self._jobs.get(self._active)
+                if current and current.running:
+                    raise BusyError("已有任务在运行，请等待完成或先停止")
+            self._reserved = None
+            job = Job(theme, opts, principal=principal, kind=kind)
             self._jobs[job.job_id] = job
             self._order.append(job.job_id)
             self._active = job.job_id
@@ -241,9 +439,20 @@ class JobRegistry:
                     break
                 self._order.pop(0)
                 self._jobs.pop(oldest, None)
-        if not job.start():
+        try:
+            started = job.start()
+        except BaseException as exc:
+            # 线程起不来等异常：_active 已经指向这条永远不会结束的任务，
+            # 不清掉就会把后续所有请求挡成"已有任务在运行"。
             with self._lock:
-                self._active = None
+                if self._active == job.job_id:
+                    self._active = None
+            job._on_error(f"任务启动失败：{exc}")
+            raise
+        if not started:
+            with self._lock:
+                if self._active == job.job_id:
+                    self._active = None
             raise BusyError("引擎拒绝启动：已有任务在运行")
         return job
 
@@ -255,17 +464,35 @@ class JobRegistry:
         with self._lock:
             return self._jobs.get(self._active) if self._active else None
 
-    def recent(self) -> list[dict]:
+    def active_snapshot_ids(self) -> set[str]:
+        """仍在运行的任务引用的快照 ID。清理历史快照时必须保留。"""
+        with self._lock:
+            active = self._jobs.get(self._active) if self._active else None
+        if active is None or not active.running:
+            return set()
+        value = str(getattr(active.opts, "snapshot_id", "") or "")
+        return {value} if value else set()
+
+    def recent(self, principal: Any = None) -> list[dict]:
+        """最近任务。**按主体过滤**：列表会先暴露 job_id，随机 ID 不能当权限用。"""
         with self._lock:
             jobs = [self._jobs[jid] for jid in reversed(self._order) if jid in self._jobs]
         return [
             {
                 "job_id": job.job_id,
+                "run_id": job.run_id,
                 "theme": job.theme,
+                "kind": job.kind,
+                "status": job.status,
+                "error": job.error,
                 "finished": job.finished,
                 "failed": job.failed,
+                "has_video": bool(job.video),
                 "video": job.video,
                 "created": job.created,
+                "updated": job.updated,
+                "options": job.options(),
             }
             for job in jobs
+            if job.visible_to(principal)
         ]

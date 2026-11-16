@@ -254,7 +254,10 @@ export function Switch({
   )
 }
 
-/** 设置行：标题在左、控件在右、行间 1px 分隔。创作台与设置页共用。 */
+/** 设置行：宽屏标题在左、控件在右；窄屏控件整行落到标题下面。
+ *
+ * 以前是死板的单行 flex，手机上 248px 的输入框把标题挤成两三个字一行。
+ */
 export function SettingRow({
   label,
   sub,
@@ -268,19 +271,23 @@ export function SettingRow({
   children?: ReactNode
   align?: 'center' | 'start'
 }) {
+  const items = align === 'start' ? 'items-start' : 'items-center'
+  const rowItems = align === 'start' ? 'sm:items-start' : 'sm:items-center'
   return (
     <div
       className={[
-        'flex gap-3.5 border-b border-[var(--ring)] py-2.5 last:border-b-0',
-        align === 'start' ? 'items-start' : 'items-center',
+        'flex flex-col gap-2 border-b border-[var(--ring)] py-2.5 last:border-b-0',
+        `sm:flex-row sm:gap-3.5 ${rowItems}`,
       ].join(' ')}
     >
-      {lead && <div className="shrink-0">{lead}</div>}
-      <div className="min-w-0 flex-1">
-        <p className="text-[13.5px] leading-snug">{label}</p>
-        {sub && <p className="mt-0.5 text-[11.5px] leading-relaxed text-ink-mute">{sub}</p>}
+      <div className={`flex min-w-0 flex-1 gap-3 ${items}`}>
+        {lead && <div className="shrink-0">{lead}</div>}
+        <div className="min-w-0 flex-1">
+          <p className="text-[13.5px] leading-snug">{label}</p>
+          {sub && <p className="mt-0.5 text-[11.5px] leading-relaxed text-ink-mute">{sub}</p>}
+        </div>
       </div>
-      <div className="shrink-0">{children}</div>
+      {children != null && <div className="min-w-0 w-full sm:w-auto sm:shrink-0">{children}</div>}
     </div>
   )
 }

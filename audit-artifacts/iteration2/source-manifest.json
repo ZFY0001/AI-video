@@ -1,0 +1,318 @@
+{
+  "handoff_files": 58,
+  "missing": [],
+  "changed": [],
+  "current_source_files": 62,
+  "source": [
+    {
+      "path": "app/__init__.py",
+      "sha256": "e13110ff37bfa1b1fe23a11e1040eac01d5459455adb57dbf119f24a093ada66",
+      "size": 480
+    },
+    {
+      "path": "app/engine.py",
+      "sha256": "f93ff528821f3240e59e864758e8aa4a82f753bfde5aa2f536deb4d5f48f8d28",
+      "size": 40638
+    },
+    {
+      "path": "app/version.py",
+      "sha256": "80f3a0a9edd7d6a66a0bacec3cb3a8e289ebb244c307448af20032db4724cdf5",
+      "size": 8480
+    },
+    {
+      "path": "pipeline/__init__.py",
+      "sha256": "85dc9a04218a2449a40526278b35dd8f804598f50a895f5ef747143f8b187578",
+      "size": 699
+    },
+    {
+      "path": "pipeline/beats.py",
+      "sha256": "ba5987fbbc3aec739309405d06231a6b335f739f64748736d206a9f4d820fae6",
+      "size": 13193
+    },
+    {
+      "path": "pipeline/branding.py",
+      "sha256": "7049e4c5a808e76a39e641ecb2884dda165d6ba8a2049f0216a5395d2a59e6ef",
+      "size": 10655
+    },
+    {
+      "path": "pipeline/clipcache.py",
+      "sha256": "6e0fd4ec9b837427a064184096fffba2a8b5a04fc53682f019c224b2375e7b61",
+      "size": 5077
+    },
+    {
+      "path": "pipeline/common.py",
+      "sha256": "925cdde96141189ea89b1730f473727cddba0de49858e58c91893e53a6f59880",
+      "size": 3058
+    },
+    {
+      "path": "pipeline/compose.py",
+      "sha256": "2e1a65ae2d3a0d4e6751ed404f5c6782af3e58e46596757028e61d1900f81c9d",
+      "size": 13939
+    },
+    {
+      "path": "pipeline/config.py",
+      "sha256": "6888224d59eb17e01de7df4c3eea1ac16b5d986de22af4afeb7cba46a9b978dc",
+      "size": 10091
+    },
+    {
+      "path": "pipeline/costs.py",
+      "sha256": "d6bed50ac520a473f1c7a6ec3ebb573d08b3d03cb25d022a54860ef4ad92c6ea",
+      "size": 5615
+    },
+    {
+      "path": "pipeline/decide.py",
+      "sha256": "5f1e3831186134228142f28c9718ff87d6da9e18082f3e89d963f6b96678f8d3",
+      "size": 26250
+    },
+    {
+      "path": "pipeline/genre.py",
+      "sha256": "de7a3922efeaae2914e26437a4e99c185e84265aef7ab06718e49fd5c274722a",
+      "size": 15304
+    },
+    {
+      "path": "pipeline/image_render.py",
+      "sha256": "f131d3640aa6627b98401820c8cad0b2e36b93bc93ee9ae5c7db5b372f35451d",
+      "size": 18903
+    },
+    {
+      "path": "pipeline/images.py",
+      "sha256": "e9e8ccdd1e38731a61d26911d4b61e7c5cbe95105b3f01a988c9eb6fcf49b2a5",
+      "size": 20496
+    },
+    {
+      "path": "pipeline/llm.py",
+      "sha256": "8ab701cc1448afcf761d0505b768ff943e839b23136d72ad4bec5ccb5f9c2d1e",
+      "size": 50228
+    },
+    {
+      "path": "pipeline/lyrics.py",
+      "sha256": "5ae5e46abf5ac2407cecbf229ea8ed40365a948378a69dbd02da8f7f2a79972b",
+      "size": 8875
+    },
+    {
+      "path": "pipeline/models.py",
+      "sha256": "a95eae07e0e840fa8b3aa7bac42e0f63d4c79654ecac4ed3fd5cdb5005a1d405",
+      "size": 14155
+    },
+    {
+      "path": "pipeline/net.py",
+      "sha256": "e2534b377c0d23146aeb9800b238d82928528b3aa2bb655312af5456d0440484",
+      "size": 4467
+    },
+    {
+      "path": "pipeline/painted.py",
+      "sha256": "1bceed67da565e1d2d09933609fa91ad6715105946b887b154e69eca4fec918f",
+      "size": 77079
+    },
+    {
+      "path": "pipeline/palette.py",
+      "sha256": "c6d136ea6f44f1375d83d882d8f92cba88b970e02da44dedb2085ae4c8c4b286",
+      "size": 3026
+    },
+    {
+      "path": "pipeline/pipeline.py",
+      "sha256": "b37cdd2d171639511285e7d17168e2746d718917d3e841335c709df1f23a7c28",
+      "size": 98062
+    },
+    {
+      "path": "pipeline/procguard.py",
+      "sha256": "6e076ac4de29f3a655030ba3ae9c4d2240560fbe4ef51916531ed727f7f3a9d3",
+      "size": 3301
+    },
+    {
+      "path": "pipeline/prompts.py",
+      "sha256": "1617b1187c0cd0da4189cbd694925612e24cb3e90b97f984e99fa67dc0abef71",
+      "size": 6941
+    },
+    {
+      "path": "pipeline/runlog.py",
+      "sha256": "32f0174836a2c2c17a3f63a5d6152a8f0df7a8901093ac1d7842626b505f1b19",
+      "size": 6878
+    },
+    {
+      "path": "pipeline/tts.py",
+      "sha256": "fd52b0bd69f85d09dad149e5d93d48ddec62e4fcb785fa7efdfb5ab6f05c8f59",
+      "size": 11747
+    },
+    {
+      "path": "pipeline/video.py",
+      "sha256": "d2f6e1fe03f1c91c988f61f94c24b6fe5ca92cf98068f7a8be1b5f99082263a2",
+      "size": 15666
+    },
+    {
+      "path": "pipeline/waveform.py",
+      "sha256": "5ca92dbfe97862e3149de35efc317f39c8426fa86d762cb0f0cdd5af6cbac0bd",
+      "size": 4255
+    },
+    {
+      "path": "server/__init__.py",
+      "sha256": "802984e7b638471f20119f624af3bb2010d60a293672ac5059acfc6d1a10e6b6",
+      "size": 254
+    },
+    {
+      "path": "server/__main__.py",
+      "sha256": "9310a57be4abf641ae8ce665d9733f0109bbea116bb441573fbd0fd22805d89f",
+      "size": 1373
+    },
+    {
+      "path": "server/app.py",
+      "sha256": "20a20af25df73186a79ef61fde0b55a94308e350957e0ebf7062d4eda81b3742",
+      "size": 19614
+    },
+    {
+      "path": "server/auth.py",
+      "sha256": "b34feca880fbbbf1aad491b1061caec26da65dc632048086de06ffeaea98e504",
+      "size": 19551
+    },
+    {
+      "path": "server/branding.py",
+      "sha256": "9ff350cdd0b46928819a164411614cdb330aaa65b55b143a681c7363750218ce",
+      "size": 11609
+    },
+    {
+      "path": "server/exports.py",
+      "sha256": "7eec066cfbc40aa2605ab4cb383d55fd051236f4bb6a8548c60d779ad283904f",
+      "size": 22032
+    },
+    {
+      "path": "server/history.py",
+      "sha256": "dbb2b8d696d77e732ed2c6d5b35e5ff9100ac07187abab370d7e79d697419c8f",
+      "size": 31970
+    },
+    {
+      "path": "server/jobs.py",
+      "sha256": "000f07fcfc0bd376571809884a1f4336cf834ffb1ad3a98e33c2e0cfaec59dd8",
+      "size": 15966
+    },
+    {
+      "path": "server/media.py",
+      "sha256": "111bd112fdf66a018f4d4cb00e730204e307759f5f8871da54f289196e9a7cb6",
+      "size": 10728
+    },
+    {
+      "path": "server/plan.py",
+      "sha256": "791b8e1f4bdaf80a7c563da6b2087bdb5f021822b3b08558c2c5ecb64458a148",
+      "size": 74104
+    },
+    {
+      "path": "server/registry.py",
+      "sha256": "3ee8347abf48d93274e52cc854e46b73ee3300acaf4c97b9af9a953f371a341a",
+      "size": 511
+    },
+    {
+      "path": "server/schemas.py",
+      "sha256": "62cc5f73220142ca11526463ece358f2b80dbf0c1d4c9912e6336a91a35f1435",
+      "size": 11189
+    },
+    {
+      "path": "server/taskstore.py",
+      "sha256": "7a193269aaa4bb5cee75573143f7d5e3004b8dda157c73a41322a3c8d26bdeaf",
+      "size": 7253
+    },
+    {
+      "path": "server/usage.py",
+      "sha256": "03e0a785ef2073b8e19d3cf74b7dd9565a03c2111a6735be571ab4ac9b4f8043",
+      "size": 10939
+    },
+    {
+      "path": "web/src/App.tsx",
+      "sha256": "bc52e640dd64c609cc0ca213e812fd7d39e7f0a39e7b522d9d86c4ef9c8e84c5",
+      "size": 10275
+    },
+    {
+      "path": "web/src/components/LogStream.tsx",
+      "sha256": "6990f5f7b03faae15433cc83e1d1ecc0a6183ae54d6011d985e6c8696f77fcdd",
+      "size": 1808
+    },
+    {
+      "path": "web/src/components/TopNav.tsx",
+      "sha256": "c5f8c82bf9261e8ca203527c899bede9640bee2d341b641b31b87cc2ba1416d6",
+      "size": 6648
+    },
+    {
+      "path": "web/src/components/ui.tsx",
+      "sha256": "bb8e164b055bd5887c815a1e349c37c652919f862062daad0308e25521868784",
+      "size": 7974
+    },
+    {
+      "path": "web/src/hooks/useRun.ts",
+      "sha256": "0e9c72f3d0e0632fb6d15a89bd6811aebf5abeac86461642cda63d38b6f8efd9",
+      "size": 10545
+    },
+    {
+      "path": "web/src/index.css",
+      "sha256": "38a416745b27a9d14a5d0227e7741465bfd469d3b801d00f2d38d636358b9afc",
+      "size": 35914
+    },
+    {
+      "path": "web/src/lib/api.ts",
+      "sha256": "dab1301a078ea794db6e1c11e86b77335ba6c8e71f9caee308837e47caef8c24",
+      "size": 42814
+    },
+    {
+      "path": "web/src/lib/auth.ts",
+      "sha256": "714484fb8ba10d630e1b22fddc28dc221a01d4fc30e6c4699cd8dfe5b41fc420",
+      "size": 7496
+    },
+    {
+      "path": "web/src/lib/palettes.ts",
+      "sha256": "a17a984adc1bdaeff48ba26492af50e66ba54797246146f607cc8b03eebac979",
+      "size": 915
+    },
+    {
+      "path": "web/src/lib/sse.ts",
+      "sha256": "4fdb4d020eb2587810a32c1d1dd68288390ba0a5d91c8443a0afd7c831bc0032",
+      "size": 3453
+    },
+    {
+      "path": "web/src/main.tsx",
+      "sha256": "796ad014558dffd78a975c14e51c1e33444c1df8c4002816525e4b4788ba83dd",
+      "size": 349
+    },
+    {
+      "path": "web/src/pages/AuthPage.tsx",
+      "sha256": "2ab46d056882f9a0d36a7d01823cce8c553372c2a80f7587ed0b15e5c6cbb920",
+      "size": 5338
+    },
+    {
+      "path": "web/src/pages/CreatePage.tsx",
+      "sha256": "e5834e69cbc3bc936e4bc731a04b70faa4706007781636dda1a79c5bea4a56e0",
+      "size": 34106
+    },
+    {
+      "path": "web/src/pages/HistoryPage.tsx",
+      "sha256": "0c31812edcd3012b1a47c73790160671b0e677b23ea46898d5d4ae55b7b95576",
+      "size": 52633
+    },
+    {
+      "path": "web/src/pages/PlanPage.tsx",
+      "sha256": "50725e614b3be4d28daeb434a9c0d5b7ebb9f2a3f9b06def90ff4484c5909a11",
+      "size": 75287
+    },
+    {
+      "path": "web/src/pages/ProfilePage.tsx",
+      "sha256": "bb719a78def7ef7f7db6065a9d6c6ec00f779523bf46dce323acc05a8eb2bea7",
+      "size": 11990
+    },
+    {
+      "path": "web/src/pages/ProjectsPage.tsx",
+      "sha256": "188b7273d65a76ede386364a97483c9787ce55cc8b1a9ae046eed8bb8dde9ee3",
+      "size": 5835
+    },
+    {
+      "path": "web/src/pages/SettingsPage.tsx",
+      "sha256": "6cf43fa06b5eeb13c16028c04c0f3f2b4ac6f6f489c070caa98f304c40958ac3",
+      "size": 16309
+    },
+    {
+      "path": "web/src/pages/TasksPage.tsx",
+      "sha256": "56a29d66431f68b13d84a95ccd3c9c5049060d169ef94881a0c37051793b6682",
+      "size": 10553
+    },
+    {
+      "path": "tests/test_pipeline.py",
+      "sha256": "e1ea905341685aec1432b61b88d369c7d184530902d93b0ee6cdbd50fd46f95b",
+      "size": 268989
+    }
+  ]
+}

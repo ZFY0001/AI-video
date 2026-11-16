@@ -1,0 +1,90 @@
+[
+  {
+    "path": "web/src/App.tsx",
+    "sha256": "b39ebebc83b4bdfaf2ca6888ac9a2583d87f0705aadc80cfe8487f4a3cdad3bd"
+  },
+  {
+    "path": "web/src/index.css",
+    "sha256": "86065f2f408481cded2612846bc28847f670d0ca2c6a3c7f9543b7291287c9d4"
+  },
+  {
+    "path": "web/src/main.tsx",
+    "sha256": "796ad014558dffd78a975c14e51c1e33444c1df8c4002816525e4b4788ba83dd"
+  },
+  {
+    "path": "web/src/components/LogStream.tsx",
+    "sha256": "6990f5f7b03faae15433cc83e1d1ecc0a6183ae54d6011d985e6c8696f77fcdd"
+  },
+  {
+    "path": "web/src/components/TopNav.tsx",
+    "sha256": "05a84ad62d9ad2868c0b931849655e04c49504b2ba52fa74827981e5cb32bd47"
+  },
+  {
+    "path": "web/src/components/ui.tsx",
+    "sha256": "877fc5f5bcc935a35b27e580f332a0825fc56ef8ab6abf6c03aa7ff8a6155f40"
+  },
+  {
+    "path": "web/src/hooks/useRun.ts",
+    "sha256": "cbf6e3ed6d069e72ac9d7b62cdefa3346f715296bc7419ce272403121555c48f"
+  },
+  {
+    "path": "web/src/lib/api.ts",
+    "sha256": "2b42c71db6d6203c922066245788a334754b45037961949eb3b6b6be4c68f1fb"
+  },
+  {
+    "path": "web/src/lib/auth.ts",
+    "sha256": "714484fb8ba10d630e1b22fddc28dc221a01d4fc30e6c4699cd8dfe5b41fc420"
+  },
+  {
+    "path": "web/src/lib/editGuard.ts",
+    "sha256": "d1874041b61ea526c6719f28be133c9d3be8025890844571df4afd3db6570621"
+  },
+  {
+    "path": "web/src/lib/palettes.ts",
+    "sha256": "a17a984adc1bdaeff48ba26492af50e66ba54797246146f607cc8b03eebac979"
+  },
+  {
+    "path": "web/src/lib/sse.ts",
+    "sha256": "4fdb4d020eb2587810a32c1d1dd68288390ba0a5d91c8443a0afd7c831bc0032"
+  },
+  {
+    "path": "web/src/pages/AuthPage.tsx",
+    "sha256": "2ab46d056882f9a0d36a7d01823cce8c553372c2a80f7587ed0b15e5c6cbb920"
+  },
+  {
+    "path": "web/src/pages/CreatePage.tsx",
+    "sha256": "247524ff72e71e435526dfbf9713906ea8481d92a34fb3ecb2ed319650e579b2"
+  },
+  {
+    "path": "web/src/pages/HistoryPage.tsx",
+    "sha256": "344e4f783cefff540de441c0d34786a7264bdca98165d0549603706d67867d53"
+  },
+  {
+    "path": "web/src/pages/PlanPage.tsx",
+    "sha256": "57ab0e436d9b281cdbf21037efec49642031305bb4bc3875797baba4d0cfa5dd"
+  },
+  {
+    "path": "web/src/pages/ProfilePage.tsx",
+    "sha256": "bb719a78def7ef7f7db6065a9d6c6ec00f779523bf46dce323acc05a8eb2bea7"
+  },
+  {
+    "path": "web/src/pages/ProjectsPage.tsx",
+    "sha256": "188b7273d65a76ede386364a97483c9787ce55cc8b1a9ae046eed8bb8dde9ee3"
+  },
+  {
+    "path": "web/src/pages/SettingsPage.tsx",
+    "sha256": "f8cb6580b183511ea652c8eebfcfa6d13b6c2efa507bc304272f51a4e6ec23dc"
+  },
+  {
+    "path": "web/src/pages/TasksPage.tsx",
+    "sha256": "56a29d66431f68b13d84a95ccd3c9c5049060d169ef94881a0c37051793b6682"
+  },
+  {
+    "path": "web/vite.config.ts",
+    "sha256": "4d4dd0554212228a5fcb02307176bd500fe6a64125afaa422fededc1655e1dd0"
+  },
+  {
+    "path": "desktop.py",
+    "sha256": "3a5e171488c119fa5722544491d424dff12de418ce1ead0f1969be0d03bb519b"
+  }
+]

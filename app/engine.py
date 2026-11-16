@@ -33,6 +33,7 @@ from pipeline.decide import JevClient, RuleDecider
 from pipeline.llm import CachedClient, CreativeLayer, OpenAIChatClient
 from pipeline.models import MusicInput
 from pipeline.pipeline import Pipeline
+from pipeline import procguard
 from pipeline.prompts import CATALOG, PromptLibrary
 from pipeline.runlog import RunLog
 from pipeline.images import provider_status
@@ -71,6 +72,8 @@ class RunOptions:
     duration: int = 15
     aspect: str = "16:9"
     style: str = ""
+    #: 项目色板预设 id（auto/warm/cool/film/ink/vivid）。只改配色，不改题材。
+    palette: str = "auto"
     shot_len: float = 5.0
     max_shots: int | None = None
     live: bool = False
@@ -90,8 +93,6 @@ class RunOptions:
     beat_offset: float = 0.0
     #: 是否自动估计节拍并据此吸附镜头切点
     auto_beats: bool = True
-    #: 只允许真图：勾选后不挂占位帧兜底。默认 False（验收/断网演示需要兜底）。
-    require_real_image: bool = False
     #: 代码绘制的帧率。水彩逐帧约 1 秒/帧，长片靠降帧率换时间（12fps 观感仍可接受）
     painted_fps: int = 24
     #: 编码成功后清掉帧缓存（3 分钟 1080p 约 2.4 GB）。会失去断点续渲，但成片已产出
@@ -102,7 +103,15 @@ class RunOptions:
     painted_quality: str = "medium"
     #: 从拆解文件拍摄：指向 `runs/<run_id>/plan`。非空时走 `render_from_plan()`，
     #: 不再重新调用大模型——拍什么由文件决定，不由内存决定。
+    #:
+    #: 拍摄时可能指向 `plan/snapshots/rev-<n>`（冻结版本），那时目录名不再是
+    #: run_id，必须同时传 `run_id`，否则成片会被写到 `runs/snapshots/` 下。
     plan_dir: str = ""
+    #: 既有项目的运行 ID。为空时从 `plan_dir` 的父目录名推断（旧行为）。
+    run_id: str = ""
+    #: 本次任务冻结的不可变快照 ID。任务结果与任务表都记录它，便于复查
+    #: “这条成片到底用的是哪一版分镜与渲染配置”。
+    snapshot_id: str = ""
     #: 单镜重拍：只重拍这一镜（镜号从 1 开始），其余镜头复用磁盘上的旧片段。
     #: 0 = 整片拍摄。只在 `plan_dir` 非空时有意义——没有拆解就没有"第几镜"。
     only_shot: int = 0
@@ -110,6 +119,44 @@ class RunOptions:
     #: `work/clips` 的片段对齐后重拼。时间轴编辑走这条路。
     #: 与 `only_shot` 互斥——重拍一镜是"重画一镜"，重合成是"一镜都不重画"。
     recompose: bool = False
+    #: 低清预览：成片尺寸减半、产物独立放在 `runs/<id>/preview/`。
+    #: 只用于确认时间轴/字幕/音轨，不写正式成片、不把项目标记为已拍。
+    preview: bool = False
+    #: 混音电平（0 = 静音，1 = 原值）。默认与 compose 的 BGM_GAIN 一致：
+    #: 配乐模式下音乐垫底，人声保持原值。
+    voice_gain: float = 1.0
+    music_gain: float = 0.28
+    #: 对白优先：人声出现时由 sidechaincompress 自动压低垫乐。默认关。
+    voice_duck: bool = False
+    #: 外挂字幕整体偏移（秒）。正值延后，负值提前；写入 SRT 时夹在有效时长内。
+    subtitle_offset: float = 0.0
+    #: 人工编辑过的字幕轨。None = 按镜头/歌词自动生成；[] = 明确不要字幕。
+    subtitle_lines: list[dict] | None = None
+    #: 字幕呈现方式：burn=烧进画面；sidecar=只出 SRT/LRC；none=不要字幕。
+    subtitle_mode: str = "burn"
+    #: 整句字幕样式模板 id（pipeline/subtitle_style.py 的 6 套预置）。
+    subtitle_style: str = "clean"
+    #: 镜头间转场：none/fade/slide/black。只影响合成，重合成即可生效。
+    transition: str = "none"
+    #: 字幕卡入场淡入。只影响叠加层，不进片段缓存。
+    text_anim: bool = False
+
+
+def render_profile_of(opts: RunOptions) -> dict[str, Any]:
+    """落盘用的渲染配置。拍摄入口据此继承，而不是拿 RenderRequest 的默认值。
+
+    只放"拍摄阶段才会用到"的选项：主题、时长、风格属于拆解输入，已经在
+    brief/script 里了，重复保存只会制造两个真相。
+    """
+    return {
+        "live": bool(opts.live),
+        "painted": bool(opts.painted),
+        "painted_fps": int(opts.painted_fps),
+        "painted_quality": str(opts.painted_quality),
+        "clean_frames": bool(opts.clean_frames),
+        "preview": bool(opts.preview),
+        "palette": str(opts.palette or "auto"),
+    }
 
 
 class Engine:
@@ -122,12 +169,16 @@ class Engine:
         on_env: Callable[[dict], None] | None = None,
         on_done: Callable[[dict], None] | None = None,
         on_error: Callable[[str], None] | None = None,
+        on_start: Callable[[str], None] | None = None,
     ):
         self.on_log = on_log or (lambda level, msg: None)
         self.on_progress = on_progress or (lambda stage, pct: None)
         self.on_env = on_env or (lambda data: None)
         self.on_done = on_done or (lambda result: None)
         self.on_error = on_error or (lambda msg: None)
+        #: run_id 一分配就回调。HTTP 层据此在生成**之前**登记归属，
+        #: 这样失败/取消的任务也不会变成无主的公共数据。
+        self.on_start = on_start or (lambda run_id: None)
         self._thread: threading.Thread | None = None
         self._running = False
         self._cancel = threading.Event()
@@ -139,10 +190,12 @@ class Engine:
     def cancel(self) -> None:
         """请求停止。
 
-        不是强杀线程：管线会在下一个镜头边界自行退出（见 Pipeline._stop_requested），
-        这样不会留下半截视频文件，已跑完的镜头还能正常进成片。
+        除了让管线在下一个镜头边界退出（见 Pipeline._stop_requested），还立即
+        结束正在运行的 FFmpeg / node 绘制进程——否则用户点了停止，后台还在满负荷
+        跑几分钟。已完成的镜头仍会保留，不会因为杀进程被删掉。
         """
         self._cancel.set()
+        procguard.request_cancel()
 
     # ------------------------------------------------------------ 环境体检
     def _refresh_env_bg(self, settings: Settings) -> None:
@@ -227,9 +280,14 @@ class Engine:
                 state = "warn"
             else:
                 state = "ok" if item["available"] == "是" else "warn"
-            data["checks"].append(
-                {"name": f"出图 {prov}", "state": state, "detail": item["detail"]}
-            )
+            refs = item.get("reference_images") or "未知"
+            data["checks"].append({
+                "name": f"出图 {prov}",
+                "state": state,
+                # 参考图能力与"能不能出图"分开显示：当前后端都不消费参考图，
+                # 隐瞒这点会让用户以为传了图就能保证角色一致。
+                "detail": f"{item['detail']} ｜ 参考图：{refs}",
+            })
 
         for prov in build_tts_chain(settings):
             ok, why = prov.available()
@@ -274,19 +332,39 @@ class Engine:
         return data
 
     # ------------------------------------------------------------ 启动运行
-    def _apply_painted(self, result: dict, opts: RunOptions) -> dict:
+    def _apply_painted(self, result: dict, opts: RunOptions, ctx: Any = None) -> dict:
         """用代码绘制后端重出成片，就地替换 result["compose"]。
 
         逻辑已抽到 ``pipeline.painted.apply_painted``，与命令行共用同一条通路
         （否则命令行没法复现 MV 演示，而这段逻辑又长到不该复制两份）。
         这里只做转发：把界面的 log/progress 回调传进去。
+
+        预览时额外做三件事：画布减半、帧率封顶 12、产物写进 preview/。
+        三件缺一不可——只降帧率不降画布，光栅化成本几乎不变；只降画布不换目录，
+        低清成片会覆盖正式成片。
         """
         from pipeline import painted as pb
 
+        fps = max(4, int(opts.painted_fps or 24))
+        size = None
+        out_dir = None
+        frames_dir = None
+        if opts.preview:
+            from pipeline.image_render import half_size
+
+            brief = result.get("brief") or {}
+            size = half_size(pb.size_for_aspect(str(brief.get("aspect_ratio") or "")))
+            fps = min(fps, 12)
+            if ctx is not None:
+                out_dir = ctx.out_dir / "painted"
+                # 帧目录也必须独立：12fps 半尺寸的帧混进正式渲染的续渲缓存，
+                # 会让下一次正式拍摄编码出节奏错乱的视频。
+                frames_dir = ctx.out_dir / "frames"
         return pb.apply_painted(result, log=self.on_log, progress=self.on_progress,
-                                fps=max(4, int(opts.painted_fps or 24)),
+                                fps=fps,
                                 clean_frames_after=bool(opts.clean_frames),
-                                quality=getattr(opts, "painted_quality", "medium"))
+                                quality=getattr(opts, "painted_quality", "medium"),
+                                size=size, out_dir=out_dir, frames_dir=frames_dir)
 
     # ------------------------------------------------------------ 只拆解
     def plan(self, opts: RunOptions, settings: Settings | None = None) -> dict[str, Any]:
@@ -296,7 +374,8 @@ class Engine:
         "一次跑完"拿到的是同一份分镜。这里不做日志中继——调用方一次性拿结果。
         """
         settings = settings or Settings(values=load_env_file())
-        ctx = new_run_context(opts.theme, settings, live=opts.live, dry_run=False, verbose=False)
+        ctx = new_run_context(opts.theme, settings, live=opts.live, dry_run=False, verbose=False,
+                              run_id=opts.run_id)
         ctx.prepare()
         pipe, creative, live = self._make_pipeline(ctx, opts, settings)
 
@@ -326,6 +405,10 @@ class Engine:
                     # 只拆解、还没拍摄。成片墙据此把这类记录排除掉——
                     # 它连一个镜头都没出，判成「失败」是错的。
                     "rendered": False,
+                    # 创作页选了什么就存什么。拍摄入口只覆盖显式传入的字段，
+                    # 否则"离线 + 代码绘制 + 12fps"会在先拆后拍时悄悄变成默认档。
+                    "render_profile": render_profile_of(opts),
+                    "revision": 0,
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -359,7 +442,7 @@ class Engine:
         if not opts.plan_dir:
             raise RuntimeError("按场重拆需要指定拆解目录")
         plan_dir = Path(opts.plan_dir)
-        ctx = existing_run_context(plan_dir.parent.name, settings, live=opts.live)
+        ctx = existing_run_context(opts.run_id or plan_dir.parent.name, settings, live=opts.live)
         ctx.prepare()
         pipe, creative, live = self._make_pipeline(ctx, opts, settings)
         result = pipe.replan_act(plan_dir, act_name, force=force)
@@ -401,9 +484,10 @@ class Engine:
         pipe = Pipeline(
             settings, lib, ctx, RunLog(ctx.log_path, verbose=False), creative, decider,
             avg_shot_len=opts.shot_len, guides=opts.guides,
-            require_real_image=opts.require_real_image,
             progress=lambda stage, pct: None,
             should_stop=lambda: False,
+            palette_id=opts.palette,
+            no_cache=opts.no_cache,
         )
         return pipe, creative, bool(client)
 
@@ -413,12 +497,38 @@ class Engine:
             self.on_error("已有任务在运行，请等待当前任务完成")
             return False
         self._cancel.clear()
+        # 清掉上一次取消留下的进程登记/标志；否则这次任务的第一个子进程
+        # 会一开头就被当成"已取消"杀掉。
+        procguard.begin_run()
         self._running = True
         self._thread = threading.Thread(target=self._worker, args=(opts, settings), daemon=True)
         self._thread.start()
         return True
 
+    def _stopped_result(self, opts: RunOptions, ctx: Any) -> dict[str, Any]:
+        """被取消且子进程已被释放时的最小结果。
+
+        没有成片，但也不能报成"失败"——用户就是点了停止。`stopped=True` 会让
+        任务表记成 canceled，任务中心与刷新后的页面都不会把它当成需要重跑的错误。
+        """
+        return {
+            "run_id": str(getattr(ctx, "run_id", "") or opts.run_id or ""),
+            "project_dir": str(getattr(ctx, "project_dir", "")),
+            "summary": "已停止：正在运行的子进程已释放",
+            "log": str(getattr(ctx, "log_path", "")),
+            "brief": {},
+            "script": {},
+            "storyboard": {"project": {}, "subjects": [], "shots": []},
+            "compose": {},
+            "music": {},
+            "lyrics": [],
+            "decisions": 0,
+            "notes": ["已停止：正在运行的子进程已释放；未完成的镜头不在成片中"],
+            "stopped": True,
+        }
+
     def _worker(self, opts: RunOptions, settings: Settings | None) -> None:
+        ctx: Any = None
         try:
             settings = settings or Settings(values=load_env_file())
             lib = PromptLibrary.load()
@@ -444,9 +554,19 @@ class Engine:
                 )
             if plan_dir:
                 # 从拆解文件拍：**复用原来的 run 目录**，让 plan 与成片待在一起。
-                ctx = existing_run_context(plan_dir.parent.name, settings, live=opts.live)
+                # `plan_dir` 可能是冻结快照目录，目录名不是 run_id，所以优先用显式值。
+                # 预览用独立命名空间，低清产物不覆盖正式成片与 work/clips。
+                namespace = "preview" if opts.preview else ""
+                ctx = existing_run_context(opts.run_id or plan_dir.parent.name, settings,
+                                           live=opts.live, namespace=namespace)
             else:
-                ctx = new_run_context(opts.theme, settings, live=opts.live, dry_run=False, verbose=False)
+                ctx = new_run_context(opts.theme, settings, live=opts.live, dry_run=False,
+                                      verbose=False,
+                                      run_id=opts.run_id,
+                                      namespace="preview" if opts.preview else "")
+            # 归属在**任何生成动作之前**登记。失败必须中止：继续跑下去只会在
+            # 数据库恢复后留下一个没有归属、却按“旧项目”对外公开的目录。
+            self.on_start(ctx.run_id)
             ctx.prepare()
             log = RunLog(ctx.log_path, verbose=False)
 
@@ -489,10 +609,21 @@ class Engine:
             pipe = Pipeline(
                 settings, lib, ctx, log, creative, decider,
                 avg_shot_len=opts.shot_len, guides=opts.guides,
-            require_real_image=opts.require_real_image,
                 # 真实阶段进度由管线推；不再在启动前一次性推完假进度
                 progress=self.on_progress,
                 should_stop=self._cancel.is_set,
+                preview=opts.preview,
+                voice_gain=opts.voice_gain,
+                music_gain=opts.music_gain,
+                voice_duck=opts.voice_duck,
+                subtitle_offset=opts.subtitle_offset,
+                subtitle_lines=opts.subtitle_lines,
+                subtitle_mode=opts.subtitle_mode,
+                subtitle_style=opts.subtitle_style,
+                transition=opts.transition,
+                text_anim=opts.text_anim,
+                palette_id=opts.palette,
+                no_cache=opts.no_cache,
             )
 
             self.on_progress("准备", 0.02)
@@ -532,11 +663,32 @@ class Engine:
             # 代码绘制后端：用 p5.js 水彩引擎重出整段视频，替换掉占位帧版本。
             # 放在 pipe.run() 之后：前面的创意/决策/分镜完全复用，省掉一整轮 LLM 调用。
             if opts.painted:
-                result = self._apply_painted(result, opts)
+                result = self._apply_painted(result, opts, ctx)
+
+            if opts.preview:
+                # 结果里必须带标记：前端与任务中心据此说明"这不是正式成片"，
+                # 否则用户会把 960×540 当成最终交付。
+                result["preview"] = True
+                if result.get("shot_preview"):
+                    result.setdefault("notes", []).append(
+                        "单镜低清预览：只生成这一镜的片段，不重合成整片、不带音轨；"
+                        "正式成片与片段缓存未改动"
+                    )
+                else:
+                    result.setdefault("notes", []).append(
+                        "低清预览：分辨率为正式成片的一半，用于确认时间轴、字幕与音轨；"
+                        "它不替代正式成片，也没有把项目标记为已拍摄"
+                    )
 
             self.on_progress("完成", 1.0)
             self.on_done(result)
         except Exception as exc:  # noqa: BLE001
+            if procguard.cancelled():
+                # 取消时被杀的子进程会以非零码退出，看起来像失败；这里按"用户
+                # 停止"收尾，任务表记 canceled 而不是 failed。
+                self.on_log("warn", "已停止：正在运行的子进程已释放；未完成的镜头不在成片中")
+                self.on_done(self._stopped_result(opts, ctx))
+                return
             detail = traceback.format_exc()[-1200:]
             self.on_error(f"{exc}\n\n{detail}")
         finally:

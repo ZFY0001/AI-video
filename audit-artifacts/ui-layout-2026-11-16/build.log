@@ -1,0 +1,14 @@
+
+> yiyan-web@0.1.0 build
+> tsc --noEmit && vite build --outDir ../audit-artifacts/ui-layout-2026-11-16/web/dist
+
+vite v8.3.4 building client environment for production...
+transforming...
+✓ 33 modules transformed.
+rendering chunks...
+computing gzip size...
+../audit-artifacts/ui-layout-2026-11-16/web/dist/index.html                   0.46 kB │ gzip:   0.32 kB
+../audit-artifacts/ui-layout-2026-11-16/web/dist/assets/index-B7tdWKu5.css   62.17 kB │ gzip:  12.86 kB
+../audit-artifacts/ui-layout-2026-11-16/web/dist/assets/index-BnHmGlZS.js   389.01 kB │ gzip: 116.02 kB
+
+✓ built in 269ms

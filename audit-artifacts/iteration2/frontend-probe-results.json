@@ -1,0 +1,38 @@
+[
+  {
+    "probe": "subtitle_save_not_in_barrier",
+    "launches": [
+      {
+        "beforeSaveCompleted": true,
+        "expected_revision": 0
+      }
+    ],
+    "revision_after_save": 1
+  },
+  {
+    "probe": "palette_uses_stale_state_revision",
+    "current_ref": 1,
+    "submitted_revision": 0
+  },
+  {
+    "probe": "canceled_result_frontend_state",
+    "result_stopped": true,
+    "phase": "done",
+    "stage": "完成"
+  },
+  {
+    "probe": "mixed_review_summary",
+    "modes": [
+      "vlm",
+      "simulated",
+      "technical_failed"
+    ],
+    "summary": "质检：视觉评审（多模态模型实际读图）"
+  },
+  {
+    "probe": "sse_crlf_and_terminal_fixed",
+    "events": 1,
+    "terminal": true,
+    "authHeaderPreserved": true
+  }
+]

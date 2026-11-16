@@ -1,0 +1,15 @@
+{
+  "sha_after_reload": "",
+  "key_match_before_restore": false,
+  "clip_state_before_restore": "stale",
+  "recompose_no_evidence": "stale-rejected",
+  "recompose_no_evidence_downstream": "RuntimeError: 镜 [1] 的画面/文案/渲染规格改过了，旧片段与当前分镜不一致，无法只重合成。请先整片重拍（会只重画变化的镜头）",
+  "recompose_with_evidence": "passed-gate",
+  "recompose_with_evidence_downstream": "VideoError: FFprobe 失败：[mov,mp4,m4a,3gp,3g2,mj2 @ 000002719b739640] moov atom not found\nC:\\Users\\ADMINI~1\\AppData\\Local\\Temp\\probe-clipstate-3fbtxxnw\\clips\\shot01.mp4: Inva",
+  "sha_after_restore": "sha-selected-image",
+  "key_match_after_restore": true,
+  "single_shot_with_evidence": "passed-gate",
+  "single_shot_with_evidence_downstream": "AttributeError: 'Pipeline' object has no attribute 'progress'",
+  "content_edited_state": "stale",
+  "content_edited_sha_restored": "sha-selected-image"
+}

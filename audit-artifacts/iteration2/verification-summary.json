@@ -1,0 +1,11 @@
+{
+  "source_files_verified": 62,
+  "business_source_changed": [],
+  "document_links_checked": 47,
+  "missing_local_links": [],
+  "unresolved_placeholders": [],
+  "backend_observations": 12,
+  "frontend_observations": 5,
+  "probe_errors": [],
+  "selfcheck_837_pass": true
+}

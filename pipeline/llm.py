@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import re
@@ -155,14 +156,47 @@ class OpenAIChatClient:
             return False, f"未知错误：{type(exc).__name__}: {exc}"
 
     def chat(self, system: str, user: str, temperature: float = 0.7) -> str:
-        payload = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "temperature": temperature,
-        }
+        return self._post(
+            {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                "temperature": temperature,
+            }
+        )
+
+    def chat_vision(self, system: str, user: str, image: Path, temperature: float = 0.1) -> str:
+        """带图的多模态请求（OpenAI 兼容的 image_url 数据 URI）。
+
+        质检分支以前只发文本——等于"看图评审"却从来没把图发出去。
+        这里把真实图片编码进 user 消息；端点不支持图像时会返回 4xx，
+        调用方捕获后降级为明确的模拟评审，而不是假装看过。
+        """
+        mime = "image/jpeg" if image.suffix.lower() in (".jpg", ".jpeg") else "image/png"
+        encoded = base64.b64encode(image.read_bytes()).decode("ascii")
+        return self._post(
+            {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": user},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:{mime};base64,{encoded}"},
+                            },
+                        ],
+                    },
+                ],
+                "temperature": temperature,
+            }
+        )
+
+    def _post(self, payload: dict[str, Any]) -> str:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         url = self._endpoint()
         last_err: Exception | None = None
@@ -208,6 +242,13 @@ class CachedClient:
         out = self.inner.chat(system, user, temperature)
         path.write_text(out, encoding="utf-8")
         return out
+
+    def chat_vision(self, system: str, user: str, image: Path, temperature: float = 0.1) -> str:
+        # 画面每次都可能不同，按文本缓存会返回上一张图的评审结论——不缓存。
+        inner = getattr(self.inner, "chat_vision", None)
+        if inner is None:
+            raise LLMError("当前模型客户端不支持图像输入")
+        return inner(system, user, image, temperature)
 
 
 # ------------------------------------------------------------------ 创意层三步
@@ -274,9 +315,7 @@ class CreativeLayer:
             if val not in (None, ""):
                 data[key] = val
         brief = ProjectBrief(
-            # 原来切到 60 字：用户写详细一点的描述就被砍掉一半，而且**没有任何提示**。
-            # 放宽到 300（后端 RunRequest.theme 上限是 2000，这里只是给模型输出兜底）。
-            theme=str(data.get("theme") or topic)[:300],
+            theme=str(data.get("theme") or topic)[:60],
             total_duration=int(data.get("total_duration") or 60),
             aspect_ratio=str(data.get("aspect_ratio") or "16:9"),
             style=str(data.get("style") or ""),
@@ -806,37 +845,26 @@ def _workflow_for(brief: ProjectBrief, genre: Genre, workflows: list[dict[str, A
 
 
 def compose_image_prompt(genre: Genre, visual: str, style: str, camera_en: str, index: int) -> str:
-    """文生图提示词公式：**[用户写的主体]**, [光线], [构图景别], [风格媒介], [质量词]
-
-    **这里曾经有一个很严重的错误**：原来的实现把主体和动作取自
-    `genre.subjects` / `genre.actions`（题材模板里的固定词），而 `visual`
-    ——也就是用户/剧本真正写的那句话——**只被当作 stable_choice 的哈希种子**，
-    根本没进提示词。结果就是：无论用户写"手挑面条"还是"老人坐在门槛上"，
-    出图里永远是模板那个"一碗热汤面 + 掀帘进门"。
-
-    现在改为：**`visual` 原文放最前面作为主体**，模板词退成补充修饰
-    （只保留 look/light 这类不改变语义的词）。用户的意思一个字都不动，
-    系统只在后面追加修饰——这是"忠实模式"的基础。
-    """
+    """文生图提示词公式：[主体],[动作/状态],[环境与道具],[光线],[构图与景别],[风格与媒介],[质量词]"""
+    subject = genre.subjects[index % len(genre.subjects)]
+    action = genre.actions[index % len(genre.actions)]
     look = stable_choice(genre.look, f"{visual}{index}")
+    look2 = stable_choice(genre.look, f"{visual}{index}", offset=3)
     light = stable_choice(
         ("golden hour", "warm rim light", "soft window light", "dramatic side light", "practical warm lights"),
         f"{visual}light{index}",
     )
-    subject = (visual or "").strip()
-    if not subject:
-        # 兜底：剧本没给画面描述时才退回模板，保证不会空提示词
-        subject = f"{genre.subjects[index % len(genre.subjects)]} ({genre.label})"
     parts = [
-        subject,
+        f"{subject} ({genre.label})",
+        action,
         look,
+        look2,
         light,
         camera_en,
         f"{genre.label} style, {_en_style(style)}",
         "masterpiece, best quality, highly detailed, sharp focus, film grain",
     ]
-    # 上限从 600 放到 900：用户描述可能很长，宁可长一点也别切掉意思
-    return ", ".join(p for p in parts if p)[:900]
+    return ", ".join(p for p in parts if p)[:600]
 
 
 def _en_style(style: str) -> str:

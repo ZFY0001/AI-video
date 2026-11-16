@@ -1,0 +1,14 @@
+
+> yiyan-web@0.1.0 build
+> tsc --noEmit && vite build
+
+[36mvite v8.3.4 [32mbuilding client environment for production...[36m[39m
+transforming...
+✓ 33 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                   0.46 kB │ gzip:   0.32 kB
+dist/assets/index-oShnoQYC.css   62.04 kB │ gzip:  12.84 kB
+dist/assets/index-CKyrLMvK.js   386.59 kB │ gzip: 115.23 kB
+
+[32m✓ built in 236ms[39m

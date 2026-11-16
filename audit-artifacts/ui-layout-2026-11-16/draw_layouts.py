@@ -1,0 +1,81 @@
+from pathlib import Path
+from PIL import Image, ImageDraw, ImageFont
+import html
+OUT=Path(__file__).resolve().parent
+FONT=Path('C:/Windows/Fonts/msyh.ttc')
+BOLD=Path('C:/Windows/Fonts/msyhbd.ttc')
+class Board:
+    def __init__(self,title):
+        self.im=Image.new('RGB',(1280,800),'#f4f6fb');self.d=ImageDraw.Draw(self.im)
+        self.svg=['<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800"><rect width="1280" height="800" fill="#f4f6fb"/>']
+        self.rect(0,0,1280,56,'#ffffff',0)
+        self.text(24,16,'一言片场',18,True)
+        self.text(168,19,'创作台    项目    任务    成片',14)
+        self.text(1100,19,'设置    账号',14)
+        self.text(24,778,title+' · 建议线框，尚未实施',13,color='#667085')
+    def rect(self,x,y,w,h,fill='#ffffff',r=12,stroke='#dce2ec'):
+        self.d.rounded_rectangle((x,y,x+w,y+h),radius=r,fill=fill,outline=stroke,width=1)
+        self.svg.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="{r}" fill="{fill}" stroke="{stroke}"/>')
+    def text(self,x,y,s,size=14,bold=False,color='#202b3c'):
+        font=ImageFont.truetype(str(BOLD if bold else FONT),size)
+        self.d.text((x,y),s,font=font,fill=color)
+        self.svg.append(f'<text x="{x}" y="{y+size}" fill="{color}" font-family="Microsoft YaHei,sans-serif" font-size="{size}" font-weight="{700 if bold else 400}">{html.escape(s)}</text>')
+    def button(self,x,y,w,label,primary=False):
+        self.rect(x,y,w,38,'#4f56d9' if primary else '#ffffff',8,'#4f56d9' if primary else '#ccd4e2')
+        self.text(x+14,y+9,label,14,True if primary else False,'#ffffff' if primary else '#344054')
+    def save(self,name):
+        self.im.save(OUT/(name+'.png'))
+        (OUT/(name+'.svg')).write_text('\n'.join(self.svg)+ '</svg>',encoding='utf-8')
+
+b=Board('创作台：基本输入优先，主操作常驻，运行区按状态变化')
+b.text(24,80,'创作台',25,True);b.text(150,89,'一句话开始，按需调整设置',14,color='#667085')
+b.rect(24,128,720,172);b.text(44,145,'主题与内容',16,True)
+b.rect(44,178,680,72,'#f8faff',8);b.text(60,196,'给家乡的面馆做一条温暖纪实短片……',16)
+b.text(44,265,'载入示例     草稿已自动保存',13,color='#667085')
+b.rect(24,316,720,194);b.text(44,334,'基本设置',16,True)
+b.text(44,376,'模式',14);b.button(112,365,92,'解说');b.button(214,365,80,'MV');b.button(304,365,90,'配乐')
+b.text(44,434,'时长',14);b.rect(112,420,115,38,'#f8faff',6);b.text(130,430,'15 秒',14)
+b.text(280,434,'画幅',14);b.rect(340,420,130,38,'#f8faff',6);b.text(355,430,'16:9',14)
+b.text(514,434,'风格',14);b.rect(570,420,154,38,'#f8faff',6);b.text(586,430,'温暖纪实',14)
+b.text(44,478,'生成方式：离线示意 / 代码绘制 / 已接入生成器',14,color='#536279')
+b.rect(24,526,720,56);b.text(44,544,'高级设置  >   色板、画质、帧率、构图参考',14)
+b.rect(24,598,720,96,'#edf2ff',10);b.text(44,615,'条件设置就近出现',15,True)
+b.text(44,645,'选择 MV / 配乐后，在基本设置旁展开音轨和歌词。',14)
+b.text(44,669,'选择代码绘制后，才展示有效的画质与帧率。',13,color='#667085')
+b.rect(760,128,496,286);b.text(780,146,'预览与结果',16,True)
+b.rect(780,184,456,174,'#edf0f6',8);b.text(905,245,'生成后在此预览',17,color='#7c8798')
+b.text(780,378,'未开始时：示例 / 最近作品 / 下一步提示',13,color='#667085')
+b.rect(760,430,496,178);b.text(780,448,'运行概览',16,True)
+b.text(780,486,'开始后显示当前阶段、预计耗时和可恢复提示。',14)
+b.text(780,522,'准备 → 拆解 → 生成 → 合成',15,color='#536279')
+b.text(780,567,'连接状态与任务状态分开，不用空日志撑高页面。',13,color='#667085')
+b.rect(760,624,496,56);b.text(780,642,'运行日志  >   默认收起，出现异常时自动提示',13)
+b.rect(24,712,1232,56,'#ffffff',8)
+b.text(44,731,'配置就绪 · 输出 16:9 / 15 秒',14,color='#536279')
+b.button(1010,721,104,'先拆解');b.button(1124,721,112,'开始生成',True)
+b.save('proposed-create-layout')
+
+b=Board('拆解工作台：分镜先出现，辅助配置进入检查器或标签页')
+b.text(24,77,'项目 / 城市记忆 / 拆解',14,color='#667085')
+b.text(24,106,'一碗面里的城市记忆',24,True);b.text(320,116,'8 镜 · 32 秒 · v3',14,color='#667085')
+b.button(1060,103,82,'版本');b.button(1154,103,82,'更多')
+b.rect(24,166,832,50,'#ffffff',8);b.text(44,180,'分镜     剧本     字幕     音轨',15,True)
+b.rect(872,166,384,50,'#ffffff',8);b.text(892,180,'镜头属性     项目设置',15,True)
+b.text(24,233,'场次：全部   开场   人物   过程   收尾',14,color='#536279')
+for y,num,label in [(268,'01','清晨推开店门，师傅整理食材'),(448,'02','热汤与手工面的细节特写')]:
+    b.rect(24,y,832,164);b.rect(42,y+18,158,112,'#e3e9f2',8);b.text(88,y+58,'预览帧',16,color='#7c8798')
+    b.text(218,y+18,'镜 '+num+'   '+label,16,True)
+    b.text(218,y+52,'画面与台词摘要，可展开编辑；状态就近显示。',14,color='#667085')
+    b.text(218,y+86,'4.0 秒    中景 / 缓慢推近    开场',14)
+    b.button(636,y+114,92,'预览');b.button(740,y+114,92,'重拍')
+b.rect(872,232,384,414);b.text(892,250,'当前镜头 · 01',16,True)
+b.text(892,291,'时长 / 机位 / 画面 / 台词',14)
+b.rect(892,326,344,112,'#f8faff',8);b.text(908,345,'详细编辑区',16,color='#667085')
+b.text(892,467,'项目设置',15,True)
+b.text(892,500,'色板与风格  >',14);b.text(892,536,'角色与参考图  >',14)
+b.text(892,572,'动效与混音  >',14);b.text(892,608,'低频设置不会把分镜推到首屏之外。',13,color='#667085')
+b.rect(24,632,832,62);b.text(44,651,'时间轴   01 ── 02 ── 03 ── 04 ── 05 ── 06 ── 07 ── 08',14)
+b.rect(24,712,1232,56,'#ffffff',8);b.text(44,731,'所有修改已保存 · 当前 v3',14,color='#536279')
+b.button(911,721,108,'低清预览');b.button(1030,721,94,'更多');b.button(1136,721,100,'开始拍摄',True)
+b.save('proposed-plan-layout')
+

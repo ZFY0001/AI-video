@@ -11,23 +11,36 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
-from .proc import run as run_hidden
 from .common import stable_hash
 from .beats import estimate_beats, manual_grid
-from .compose import compose, fit_clip
+from .clipcache import clip_key as build_clip_key
+from .clipcache import state as clip_state
+from .clipcache import write_key as write_clip_key
+from .compose import compose, fit_clip, probe_resolution
 from .config import UPLOADS_DIR, RunContext, Settings, resource_dir
-from .decide import DecisionTrace, RuleDecider, apply_escalation, judge
+from .costs import CLOUD_VIDEO_CNY_PER_SECOND as CLOUD_COST_CNY
+from .costs import record as record_cost
+from .decide import REVIEW_RULE_VERSION, DecisionTrace, RuleDecider, apply_escalation, judge
+from . import gencache as gcache
 from .genre import Genre, pick_genre
-from .image_render import RESOLUTIONS, render_overlay, render_still
-from .images import ImageError, build_provider_chain, provider_status
-from .llm import CHARS_PER_SEC, CreativeLayer
+from .image_render import (
+    RESOLUTIONS,
+    half_size,
+    render_overlay,
+    render_still,
+    render_subtitle_card,
+)
+from .images import build_provider_chain, generation_size, inspect_image, provider_status
+from .llm import CHARS_PER_SEC, CreativeLayer, OpenAIChatClient
 from .lyrics import assign_captions, parse_lyrics
 from .models import (
     MAX_SHOT_SECONDS,
@@ -39,9 +52,13 @@ from .models import (
     Storyboard,
     brief_from_dict,
     build_timeline,
+    caption_of,
     script_from_dict,
     storyboard_from_dict,
 )
+from .palette import apply as apply_palette
+from .palette import resolve as resolve_palette
+from .subtitle_style import resolve_style
 from .prompts import PromptLibrary
 from .runlog import RunLog
 from .tts import MAX_TEMPO, build_tts_chain, concat_audio, fit_audio
@@ -54,7 +71,6 @@ from .video import (
 
 MAX_ATTEMPTS = 3          # 提示词库 2.4 / 2.6 的 max_attempts
 DEEP_REVIEW_CANDIDATES = 3  # 2.3 deep_review 时的候选数
-CLOUD_COST_CNY = 0.5       # 云端生成一秒视频的估价，用于护栏与预算水位
 #: 节拍估计置信度下限。低于它就放弃按拍切镜——宁可不跟拍，也不要按错拍切。
 BEAT_MIN_CONFIDENCE = 0.25
 
@@ -70,10 +86,20 @@ class Pipeline:
         decider: Any,
         avg_shot_len: float = 5.0,
         guides: bool = False,
-        #: 只允许真图：勾选后不挂占位帧兜底，ComfyUI 不可用直接失败（见 images.build_provider_chain）
-        require_real_image: bool = False,
         progress: Callable[[str, float], None] | None = None,
         should_stop: Callable[[], bool] | None = None,
+        preview: bool = False,
+        voice_gain: float = 1.0,
+        music_gain: float = 0.28,
+        voice_duck: bool = False,
+        subtitle_offset: float = 0.0,
+        subtitle_lines: list | None = None,
+        subtitle_mode: str = "burn",
+        subtitle_style: str = "clean",
+        transition: str = "none",
+        text_anim: bool = False,
+        palette_id: str = "auto",
+        no_cache: bool = False,
     ):
         self.settings = settings
         self.lib = lib
@@ -83,7 +109,6 @@ class Pipeline:
         self.decider = decider
         self.avg_shot_len = avg_shot_len
         self.guides = guides
-        self.require_real_image = require_real_image
         #: MV 模式的音乐输入。run() 里按参数赋值；空对象 = 原来的「纯一句话」模式。
         self.music: MusicInput = MusicInput()
         #: 解析后的歌词行（Step 8）。空表示本次没有歌词或歌词不可用。
@@ -101,13 +126,45 @@ class Pipeline:
         self.should_stop = should_stop or (lambda: False)
         self.stopped = False
         self.genre: Genre = pick_genre("")
-        self.image_chain = build_provider_chain(
-            settings, resource_dir("workflows"), require_real=self.require_real_image)
-        self.work_scale = 2  # 运动画布倍率：背景放大 2 倍做 Ken Burns，文字层同倍率渲染保持锐利
+        self.image_chain = build_provider_chain(settings, resource_dir("workflows"))
+        #: 低清预览：成片尺寸减半、工作画布不再放大。像素少四倍，出图与编码都快；
+        #: 代价是细节与文字锐度下降——它只用来确认时间轴/字幕/音轨，不替代正式成片。
+        self.preview = bool(preview)
+        # 运动画布倍率：背景放大 2 倍做 Ken Burns，文字层同倍率渲染保持锐利。
+        # 预览降到 1 倍，避免在已经减半的成片上再做一轮无谓的 2 倍绘制。
+        self.work_scale = 1 if self.preview else 2
+        #: `_make_clip` 的干净背景/文字层倍率；预览用 0.5 直接按半分辨率绘制。
+        self.still_scale = 0.5 if self.preview else float(self.work_scale)
+        #: `_generate_still` 的占位帧倍率。正常仍是 1 倍（保持原有产物尺寸）。
+        self.fixture_scale = 0.5 if self.preview else 1.0
+        #: 混音与字幕设置。重合成会复用它们，所以改电平/校准字幕不需要重画。
+        self.voice_gain = max(0.0, float(voice_gain))
+        self.music_gain = max(0.0, float(music_gain))
+        #: 对白优先：人声出现时自动压低垫乐。只影响混音，重合成即可生效。
+        self.voice_duck = bool(voice_duck)
+        #: 镜头间转场与字幕入场动效。都是合成期参数，不需要重拍片段。
+        self.transition = str(transition or "none").lower()
+        self.text_anim = bool(text_anim)
+        self.subtitle_offset = float(subtitle_offset)
+        #: 人工字幕轨。None = 自动生成；空列表 = 明确不要字幕。
+        self.subtitle_lines = subtitle_lines
+        #: 字幕呈现方式：burn=烧进画面；sidecar=只出 SRT/LRC；none=不要字幕。
+        mode = str(subtitle_mode or "burn").strip().lower()
+        self.subtitle_mode = mode if mode in ("burn", "sidecar", "none") else "burn"
+        #: 整句字幕样式模板。只影响最终叠加的字幕卡，不重出片段。
+        self.subtitle_style = resolve_style(subtitle_style)
+        #: 项目色板。只替换 Genre 的调色板，不改题材与文案。
+        self.palette_id = resolve_palette(palette_id)
+        #: 用户明确要求不使用片段缓存（整片重拍时重新出每一镜）。
+        self.no_cache = bool(no_cache)
         self.traces: list[DecisionTrace] = []
         self._video_size: tuple[int, int] = RESOLUTIONS["16:9"]
         self.video_chain: list[Any] = []
         self.tts_chain = build_tts_chain(settings)
+        #: 视觉评审客户端。按 VLM_* 配置单独建，避免把 VLM_MODEL 配了却仍用
+        #: LLM_MODEL 请求图像——那样"开了视觉评审"实际还是文本模型。
+        self._vlm_client: Any = None
+        self._workflow_hash: str | None = None
 
     # ------------------------------------------------------------ 决策包装
     def _decide(self, point: str, fn, *args, **kwargs) -> dict:
@@ -189,8 +246,10 @@ class Pipeline:
         沿用管线的默认 16:9。
         """
         self.genre = pick_genre(brief.theme + " " + brief.style + " " + extra_text)
-        # 成片分辨率随画幅走（9:16 / 1:1 也是 1080 短边）
-        self._video_size = RESOLUTIONS.get(brief.aspect_ratio, RESOLUTIONS["16:9"])
+        self.genre = apply_palette(self.genre, self.palette_id)
+        # 成片分辨率随画幅走（9:16 / 1:1 也是 1080 短边）；预览取一半。
+        size = RESOLUTIONS.get(brief.aspect_ratio, RESOLUTIONS["16:9"])
+        self._video_size = half_size(size) if self.preview else size
         self.video_chain = build_video_chain(self.settings, *self._video_size)
 
     def _apply_lyrics(self, board: Storyboard) -> None:
@@ -784,6 +843,8 @@ class Pipeline:
     ) -> dict[str, Any]:
         """逐镜头闭环 → 完成度终检 → 合成。两个入口共用这一段。"""
         if self.only_shot:
+            if self.preview:
+                return self._render_single_shot_preview(brief, script, board)
             return self._render_single_shot(brief, script, board)
 
         # 2. 逐镜头闭环
@@ -840,6 +901,40 @@ class Pipeline:
             raise RuntimeError(f"分镜里没有镜 {self.only_shot}，无法单镜重拍")
 
         total = max(1, len(board.shots))
+        # 其余镜头沿用上次产物，证据也要沿用：目标镜自己会重新拍，不需要恢复。
+        self._restore_reuse_state(board, skip_shot=target.id)
+        # 先确认"其余镜头"的片段仍然对应当前输入，再动目标镜。否则会先花时间
+        # 重拍目标镜，最后才发现别的镜头已经过期，白白等一轮。
+        missing: list[int] = []
+        stale: list[int] = []
+        unknown: list[int] = []
+        for shot in board.shots:
+            if shot.id == target.id:
+                continue
+            clip = self.ctx.work_dir / "clips" / f"shot{shot.id:02d}.mp4"
+            state = clip_state(clip, self._clip_key(shot, brief, board))
+            if state == "missing":
+                missing.append(shot.id)
+            elif state == "stale":
+                stale.append(shot.id)
+            elif state == "unknown":
+                unknown.append(shot.id)
+        if missing:
+            raise RuntimeError(
+                f"镜 {missing} 的已有片段不在了（work/clips 被清理过？），没法只重拍一镜。"
+                f"请改用「开始拍摄」整片重拍"
+            )
+        if stale:
+            raise RuntimeError(
+                f"镜 {stale} 的画面/文案/渲染规格改过了，但它们的片段还是旧的。"
+                f"单镜重拍不会替你重画这些镜头——请先整片重拍（只会重画变化的镜头），"
+                f"或逐镜重拍它们"
+            )
+        if unknown:
+            raise RuntimeError(
+                f"镜 {unknown} 的旧片段缺少缓存指纹，无法确认是否与当前分镜一致。"
+                f"请先整片重拍一次建立指纹；本次没有改动任何片段"
+            )
         self.log.event(
             "shot",
             f"单镜重拍：只重拍镜 {target.id}，其余 {total - 1} 镜复用已有片段",
@@ -853,26 +948,16 @@ class Pipeline:
                 f"镜 {target.id} 重拍后没有产出可用片段（质检未通过），成片保持原样未改动"
             )
 
-        # 其余镜头：磁盘上有片段就复用，没有就明确报错。
-        # 静默跳过会让成片少几镜，而用户看到的是"我只重拍了一镜，结果片子短了"。
+        # 其余镜头：前面已经校验过指纹，这里只负责收集路径。
         approved: list[Shot] = []
-        missing: list[int] = []
         for shot in board.shots:
             if shot.id == target.id:
                 approved.append(shot)
                 continue
             clip = self.ctx.work_dir / "clips" / f"shot{shot.id:02d}.mp4"
-            if clip.is_file():
-                shot.clip_path = str(clip)
-                shot.status = "approved"
-                approved.append(shot)
-            else:
-                missing.append(shot.id)
-        if missing:
-            raise RuntimeError(
-                f"镜 {missing} 的已有片段不在了（work/clips 被清理过？），没法只重拍一镜。"
-                f"请改用「开始拍摄」整片重拍"
-            )
+            shot.clip_path = str(clip)
+            shot.status = "approved"
+            approved.append(shot)
 
         self.ctx.notes.append(
             f"单镜重拍：镜 {target.id} 已重拍，其余 {len(approved) - 1} 镜沿用上次的片段，"
@@ -880,6 +965,132 @@ class Pipeline:
         )
         self.progress("合成成片", 0.88)
         return self._compose_and_report(brief, script, board, approved)
+
+    def _render_single_shot_preview(
+        self, brief: ProjectBrief, script: Script, board: Storyboard
+    ) -> dict[str, Any]:
+        """单镜预览：只出这一镜的低清片段，不重合成、不动正式片段。
+
+        与「单镜重拍」差在之后做什么：重拍要拿新片段和其余旧片段重拼成片；
+        预览只回答"这一镜现在长什么样"，所以不碰 `work/clips`，也不产出 final.mp4。
+        产物落在 preview/ 命名空间（由调用方给出的 ctx 决定）。
+        """
+        target = next((s for s in board.shots if s.id == self.only_shot), None)
+        if target is None:
+            raise RuntimeError(f"分镜里没有镜 {self.only_shot}，无法预览")
+
+        self.log.event(
+            "shot",
+            f"单镜预览：只生成镜 {target.id}，不重合成、不影响正式片段",
+            shot=target.id,
+        )
+        self.progress(f"预览镜 {target.id}", 0.3)
+        self._process_shot(target, brief, board)
+        if not target.clip_path or not Path(target.clip_path).is_file():
+            raise RuntimeError(f"镜 {target.id} 预览没有产出可用片段（质检未通过）")
+
+        clip = Path(target.clip_path)
+        resolution = probe_resolution(clip)
+        size_mb = round(clip.stat().st_size / 1024 / 1024, 2)
+        summary = f"单镜预览：镜 {target.id}，{target.duration:.2f}s，{resolution or '未知分辨率'}"
+        self.log.event("done", summary)
+        self.progress("完成", 1.0)
+        self.ctx.notes.append(
+            f"单镜预览：只生成镜 {target.id} 的低清片段，没有重合成整片，"
+            "正式成片与逐镜片段缓存均未改动；预览片段不带音轨"
+        )
+        return {
+            "run_id": self.ctx.run_id,
+            "project_dir": str(self.ctx.project_dir),
+            "summary": summary,
+            "log": str(self.log.path),
+            "brief": brief.to_dict(),
+            "script": script.to_dict(),
+            # 整份分镜照常返回：前端要显示这是哪一镜，也便于对照其它镜的规格。
+            "storyboard": board.to_dict(),
+            "compose": {
+                "video": str(clip),
+                "subtitle": "",
+                "storyboard": "",
+                "duration": round(target.duration, 3),
+                "resolution": resolution,
+                "has_audio": False,
+                "audio_source": "silent",
+                "audio": "",
+                "size_mb": size_mb,
+                "delivered": 1,
+                "dropped": 0,
+                "notes": ["单镜预览片段，不是整片成片"],
+            },
+            "music": self.music.to_dict(),
+            "lyrics": [],
+            "subtitle": {
+                "mode": self.subtitle_mode,
+                "offset": self.subtitle_offset,
+                "lines": self.subtitle_lines,
+                "style": self.subtitle_style.id,
+            },
+            "decisions": len(self.traces),
+            "notes": self.ctx.notes,
+            "stopped": self.stopped,
+            "shot_preview": True,
+            "shot_id": target.id,
+        }
+
+    #: 复用旧片段时要一起绑回来的运行期字段。整片重拍必须清空它们（否则被跳过
+    #: 的镜头会冒充"有证据"），但复用路径用的就是上次那批产物，清空等于自断指纹。
+    _REUSE_STATE_FIELDS = (
+        "image_sha256", "frame_path", "frame_source", "frame_is_clean",
+        "evidence_id", "candidate_evidence", "review_mode", "visual_check",
+        "review_rule", "tech_ok", "tech_reason", "image_width", "image_height",
+        "image_mean", "image_contrast", "quality", "verdict", "defect_type",
+        "attempts", "provider", "route", "intent_path",
+    )
+
+    def _restore_reuse_state(self, board: Storyboard, *, skip_shot: int = 0) -> int:
+        """把上一次拍摄的证据绑回读进来的分镜，供「只重合成 / 单镜重拍」使用。
+
+        片段指纹含选中图摘要，而 `shot_from_dict()` 读回分镜时会清空运行期字段。
+        不恢复的话每一镜都会被判成"画面改过了"，时间轴编辑与单镜重拍全部失效。
+        证据取自 `output/storyboard.json`——合成时写下的那份才是拍摄结果；
+        按镜号匹配，找不到记录的镜头保持空摘要，让指纹校验如实拒绝。
+        """
+        path = self.ctx.out_dir / "storyboard.json"
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        by_id: dict[int, dict[str, Any]] = {}
+        for item in (data.get("shots") or []):
+            if not isinstance(item, dict):
+                continue
+            try:
+                by_id[int(item.get("id"))] = item
+            except (TypeError, ValueError):
+                continue
+        restored = 0
+        expected = 0
+        for shot in board.shots:
+            if skip_shot and shot.id == skip_shot:
+                continue
+            expected += 1
+            record = by_id.get(shot.id)
+            if not record:
+                continue
+            for field in self._REUSE_STATE_FIELDS:
+                if field in record:
+                    setattr(shot, field, record[field])
+            restored += 1
+        if restored < expected:
+            self.ctx.notes.append(
+                f"有 {expected - restored} 镜读不到上一次拍摄的证据"
+                "（output/storyboard.json 缺失或不含该镜），这些镜头无法复用旧片段"
+            )
+        self.log.event(
+            "plan", f"复用上次拍摄证据：{restored}/{expected} 镜",
+            restored=restored, shots=expected, source=str(path),
+        )
+        return restored
 
     def _recompose(
         self, brief: ProjectBrief, script: Script, board: Storyboard,
@@ -897,14 +1108,24 @@ class Pipeline:
         src_dir = self.ctx.work_dir / "clips"
         fit_dir = self.ctx.work_dir / "clips_fit"
         fit_dir.mkdir(parents=True, exist_ok=True)
+        self._restore_reuse_state(board)
 
         approved: list[Shot] = []
         missing: list[int] = []
+        stale: list[int] = []
+        unknown: list[int] = []
         refit: list[int] = []
         for shot in board.shots:
             src = src_dir / f"shot{shot.id:02d}.mp4"
-            if not src.is_file():
+            state = clip_state(src, self._clip_key(shot, brief, board))
+            if state == "missing":
                 missing.append(shot.id)
+                continue
+            if state == "stale":
+                stale.append(shot.id)
+                continue
+            if state == "unknown":
+                unknown.append(shot.id)
                 continue
             dst = fit_dir / f"shot{shot.id:02d}.mp4"
             # 输出**绝不指向 src**：对齐要重编码，原地写一遍画质就掉一遍，
@@ -920,6 +1141,16 @@ class Pipeline:
             raise RuntimeError(
                 f"镜 {missing} 的片段不在 work/clips 里，没法只重合成。"
                 f"这几镜可能从没拍过，或者 work 目录被清理过——请用「开始拍摄」整片重拍"
+            )
+        if stale:
+            raise RuntimeError(
+                f"镜 {stale} 的画面/文案/渲染规格改过了，旧片段与当前分镜不一致，"
+                f"无法只重合成。请先整片重拍（会只重画变化的镜头）"
+            )
+        if unknown:
+            raise RuntimeError(
+                f"镜 {unknown} 的旧片段缺少缓存指纹，无法确认是否与当前分镜一致。"
+                f"请先整片重拍一次建立指纹；本次没有改动任何片段"
             )
         if not approved:
             raise RuntimeError("没有可用的片段，拒绝产出成片")
@@ -948,6 +1179,80 @@ class Pipeline:
         # 配音从 `work/vo/*_raw.wav` 复用后重新 fit：台词没变，重新合成一遍
         # 纯属浪费（云端 TTS 还要走网络），但镜长变了，拉伸与留白必须跟着变。
         return self._compose_and_report(brief, script, board, approved, reuse_voice=True)
+
+    def _text_layers(
+        self, brief: ProjectBrief, board: Storyboard, approved: list[Shot]
+    ) -> list[tuple[Path, float, float]]:
+        """构建最终合成的文字层：固定标题 + 当前字幕。
+
+        片段是干净的，字幕只在这里出现。因此改字幕、调偏移、清空字幕都只需
+        重合成，不需要重新出图；旧片段若已烘死文字，缓存指纹会把它判成过期。
+        """
+        overlay_scale = 0.5 if self.preview else 1.0
+        layers: list[tuple[Path, float, float]] = []
+        frame_dir = self.ctx.work_dir / "frames" / "text"
+        total = len(approved)
+        cursor = 0.0
+
+        # 固定层：镜号、标题、验收标准。字幕留空，由下面的字幕卡单独负责。
+        for shot in approved:
+            path = render_overlay(
+                shot, brief, self.genre,
+                frame_dir / f"shot{shot.id:02d}_chrome.png",
+                total_shots=total, show_guides=self.guides,
+                scale=overlay_scale, subtitle_text="",
+            )
+            layers.append((path, cursor, cursor + float(shot.duration)))
+            cursor += float(shot.duration)
+
+        if self.subtitle_mode != "burn":
+            return layers
+
+        # 字幕卡：按实际字幕时间轴逐条叠加，而不是把整镜文字画在一张图上。
+        lines: list[tuple[float, float, str]] = []
+        if self.subtitle_lines is not None:
+            for line in self.subtitle_lines:
+                try:
+                    lines.append((
+                        float(line.get("start") or 0.0),
+                        float(line.get("end") or 0.0),
+                        str(line.get("text") or "").strip(),
+                    ))
+                except (AttributeError, TypeError, ValueError):
+                    continue
+        elif self.music.enabled and not self.music.is_bgm and self.lyric_lines:
+            for line in self.lyric_lines:
+                lines.append((float(line.start), float(line.end), str(line.text).strip()))
+        else:
+            # 自动字幕：交付时间轴上的每镜一句（与 compose 的 write_srt 一致）
+            cursor = 0.0
+            for shot in approved:
+                text = (shot.caption or shot.narration or "").strip()
+                if text:
+                    lines.append((cursor, cursor + float(shot.duration), text))
+                cursor += float(shot.duration)
+
+        total_duration = sum(float(s.duration) for s in approved)
+        warnings: list[str] = []
+        for index, (start, end, text) in enumerate(lines, start=1):
+            start = start + self.subtitle_offset
+            end = end + self.subtitle_offset
+            start = max(0.0, min(start, total_duration))
+            end = max(start + 0.05, min(end, total_duration))
+            if end <= start or not text:
+                continue
+            card = render_subtitle_card(
+                text, brief,
+                frame_dir / f"sub{index:03d}.png",
+                scale=overlay_scale,
+                style=self.subtitle_style,
+                report=warnings,
+            )
+            layers.append((card, start, end))
+        if warnings:
+            # 缺字/回退必须让用户看见，不能只在画面里悄悄变化。
+            self.log.event("subtitle", "；".join(dict.fromkeys(warnings)))
+        return layers
 
     def _compose_and_report(
         self, brief: ProjectBrief, script: Script, board: Storyboard,
@@ -995,7 +1300,17 @@ class Pipeline:
                          # 字幕文件按歌词自己的节奏走（一镜可能两句、一句可能跨两镜）。
                          # 配乐模式不传：那时字幕要与配音念的内容一致。
                          lyrics=self.lyric_lines if (self.music.enabled
-                                                     and not self.music.is_bgm) else None)
+                                                     and not self.music.is_bgm) else None,
+                         voice_gain=self.voice_gain,
+                         music_gain=self.music_gain,
+                         voice_duck=self.voice_duck,
+                         subtitle_offset=self.subtitle_offset,
+                         subtitle_lines=self.subtitle_lines,
+                         subtitle_mode=self.subtitle_mode,
+                         transition=self.transition,
+                         text_anim=self.text_anim,
+                         # 片段已不含文字，标题与字幕在拼接后统一叠加。
+                         text_layers=self._text_layers(brief, board, approved))
         self.log.event("compose", f"成片产出：{result.video}", **result.to_dict())
 
         summary = self.log.write_summary(self.ctx, brief, script, board, result.to_dict())
@@ -1016,6 +1331,13 @@ class Pipeline:
             # 歌词行交给渲染后端做逐字卡拉OK（Step 9）。只传 MV 模式的上屏歌词。
             "lyrics": [ln.to_dict() for ln in self.lyric_lines]
             if (self.music.enabled and not self.music.is_bgm) else [],
+            # 字幕设置交给渲染后端：代码绘制版必须与占位帧版用同一套模式/偏移/人工轨。
+            "subtitle": {
+                "mode": self.subtitle_mode,
+                "offset": self.subtitle_offset,
+                "lines": self.subtitle_lines,
+                "style": self.subtitle_style.id,
+            },
             "decisions": len(self.traces),
             "notes": self.ctx.notes,
             "stopped": self.stopped,
@@ -1073,6 +1395,31 @@ class Pipeline:
             self.ctx.notes.append(f"镜 {shot.id} 路由信心不足，标记待人工复核")
         self.log.event("shot", f"镜 {shot.id} 路由：{chosen}", shot=shot.id, route=shot.route, candidates=n_candidates)
 
+        # 生成缓存：昂贵的是出图与语义评审，不是编码。必须在调用 provider 之前
+        # 检查，命中后连评审都不再跑，并恢复同一张图对应的完整证据。
+        gen_key = ""
+        cache_enabled = not self.no_cache and shot.id != self.only_shot
+        if cache_enabled:
+            gen_shot, locks = self._locked_prompt(shot, board)
+            gen_key = self._gen_signature(
+                shot, brief, board, n_candidates, gen_shot, locks,
+                _seed(brief.theme, shot.id, 1),
+            )
+            cached = gcache.load(self.ctx.work_dir / "gencache", shot.id, gen_key)
+            if cached is not None and self._restore_generation(shot, cached):
+                self.log.event(
+                    "generate",
+                    f"镜 {shot.id} 命中生成缓存：跳过出图与评审，恢复选中证据",
+                    shot=shot.id,
+                    cached=True,
+                    evidence_id=shot.evidence_id,
+                    provider=shot.frame_source,
+                )
+                clip = self._make_clip(shot, brief, board)
+                if clip is None:
+                    shot.status = "rejected"
+                return
+
         # 生成 → 质检 → 重试
         #
         # 循环语义（与提示词库 2.4/2.6 对齐）：
@@ -1088,9 +1435,10 @@ class Pipeline:
                 return
             shot.attempts = attempt
             seed = _seed(brief.theme, shot.id, attempt)
-            still = self._generate_still(shot, brief, board, attempt, seed)
-            if still is None:
+            generated = self._generate_still(shot, brief, board, attempt, seed)
+            if generated is None:
                 continue
+            still, still_provider = generated
             desc = self._describe(still, shot, brief, attempt)
             review = self._decide(
                 "review_quality",
@@ -1104,16 +1452,57 @@ class Pipeline:
             )
             score, verdict = judge(review)
             defect = str(review.get("defect_type") or "none") if score else "unknown"
+
+            # 把"分数是怎么来的"一起落盘：模拟评审与真实视觉评审必须可区分。
+            try:
+                desc_info = json.loads(desc)
+            except (TypeError, ValueError):
+                desc_info = {}
+
+            # 技术检查是硬闸门，**不依赖决策层**：接入 Jev/远程模型后，
+            # 它们没有理由知道"图片其实读不出来"，不能靠它们自觉拒判。
+            technical = desc_info.get("technical") if isinstance(desc_info, dict) else None
+            if isinstance(technical, dict) and technical.get("ok") is False:
+                score, verdict, defect = 1, "reject", "image_unreadable"
+                self.ctx.notes.append(
+                    f"镜 {shot.id} 技术检查失败（{technical.get('reason') or '图片不可用'}），本镜不放行"
+                )
+
+            shot.review_mode = str(
+                review.get("review_mode") or desc_info.get("review_mode") or "simulated"
+            )
+            shot.visual_check = str(
+                review.get("visual_check") or desc_info.get("visual_check") or "not_performed"
+            )
+            shot.review_rule = str(review.get("rule_version") or REVIEW_RULE_VERSION)
+            shot.image_sha256 = str(
+                desc_info.get("image_sha256")
+                or (desc_info.get("technical") or {}).get("sha256")
+                or ""
+            )
+            # 技术证据原样留档：质检面板要给出"看了多大、多亮、对比度多少"，
+            # 只留一个分数无法证明画面真的被检查过。
+            if isinstance(technical, dict):
+                shot.tech_ok = bool(technical.get("ok"))
+                shot.tech_reason = str(technical.get("reason") or "")
+                shot.image_width = int(technical.get("width") or 0)
+                shot.image_height = int(technical.get("height") or 0)
+                shot.image_mean = round(float(technical.get("mean") or 0.0), 2)
+                shot.image_contrast = round(float(technical.get("contrast") or 0.0), 2)
+
             if score <= 0:
                 self.ctx.notes.append(f"镜 {shot.id} 质检响应无法解析（{review}），按需复核处理，不放行")
             self.log.event(
                 "review",
-                f"镜 {shot.id} 第 {attempt} 次质检：{score}/4 {verdict}",
+                f"镜 {shot.id} 第 {attempt} 次质检：{score}/4 {verdict}"
+                f"（{_review_label(shot.review_mode, shot.visual_check)}）",
                 shot=shot.id,
                 attempt=attempt,
                 quality=score,
                 verdict=verdict,
                 defect=defect,
+                review_mode=shot.review_mode,
+                visual_check=shot.visual_check,
                 decided_by="pipeline(judge)",
             )
             if verdict == "accept":
@@ -1123,7 +1512,16 @@ class Pipeline:
                 shot.status = "approved"
                 shot.frame_path = str(still)
                 candidates_img.append(
-                    {"index": str(len(candidates_img) + 1), "desc": desc, "path": str(still), "quality": score}
+                    {
+                        "index": str(len(candidates_img) + 1),
+                        "desc": desc,
+                        "path": str(still),
+                        "quality": score,
+                        "evidence": self._candidate_evidence(
+                            shot, still, desc, review, score, verdict, defect,
+                            still_provider, attempt,
+                        ),
+                    }
                 )
                 if n_candidates <= 1:
                     break
@@ -1160,7 +1558,16 @@ class Pipeline:
                 shot.status = "skipped"
                 self.ctx.notes.append(f"镜 {shot.id} 连续同缺陷，跳过并进入人工复核队列")
                 candidates_img.append(
-                    {"index": str(len(candidates_img) + 1), "desc": desc, "path": str(still), "quality": score}
+                    {
+                        "index": str(len(candidates_img) + 1),
+                        "desc": desc,
+                        "path": str(still),
+                        "quality": score,
+                        "evidence": self._candidate_evidence(
+                            shot, still, desc, review, score, verdict, defect,
+                            still_provider, attempt,
+                        ),
+                    }
                 )
                 break
             if action == "switch_model":
@@ -1171,7 +1578,16 @@ class Pipeline:
                 shot.status = "rejected"
                 self.ctx.notes.append(f"镜 {shot.id} 达最大尝试次数仍未通过，转人工复核")
                 candidates_img.append(
-                    {"index": str(len(candidates_img) + 1), "desc": desc, "path": str(still), "quality": score}
+                    {
+                        "index": str(len(candidates_img) + 1),
+                        "desc": desc,
+                        "path": str(still),
+                        "quality": score,
+                        "evidence": self._candidate_evidence(
+                            shot, still, desc, review, score, verdict, defect,
+                            still_provider, attempt,
+                        ),
+                    }
                 )
 
         if not candidates_img:
@@ -1198,6 +1614,8 @@ class Pipeline:
                 shot=shot.id,
                 margin=pick.get("margin"),
             )
+        shot.candidate_evidence = [c["evidence"] for c in candidates_img if c.get("evidence")]
+        self._apply_evidence(shot, best.get("evidence") or {})
         shot.frame_path = best["path"]
         shot.quality = int(best.get("quality") or shot.quality)
         if shot.status not in ("approved", "skipped"):
@@ -1205,18 +1623,55 @@ class Pipeline:
             if shot.status == "rejected":
                 self.ctx.notes.append(f"镜 {shot.id} 最高分 {shot.quality}/4 未达阈值，标记为不合格并转人工复核")
 
+        if cache_enabled and gen_key:
+            gcache.store(
+                self.ctx.work_dir / "gencache", shot.id, gen_key,
+                Path(shot.frame_path),
+                provider=shot.frame_source,
+                quality=shot.quality,
+                status=shot.status,
+                evidence=best.get("evidence") or {},
+                candidates=shot.candidate_evidence,
+            )
+
         # 出片
         clip = self._make_clip(shot, brief, board)
         if clip is None:
             shot.status = "rejected"
 
     # ------------------------------------------------------------ 生成
-    def _generate_still(self, shot: Shot, brief: ProjectBrief, board: Storyboard, attempt: int, seed: int) -> Path | None:
+    def _locked_prompt(self, shot: Shot, board: Storyboard) -> tuple[Shot, list[str]]:
+        """把被引用主体的视觉锁定拼进**本次出图**的提示词。
+
+        参考图目前不被任何 provider 消费（能力声明里写明），能做的跨镜一致性
+        只有文字锁定。刻意不改 `shot.prompt_image` 原稿：它是用户/模型写的，
+        改动它会让"我改过什么"失去可信度，也会在重试时越拼越长。
+        """
+        if not shot.subject_refs:
+            return shot, []
+        by_id = {s.id: s for s in board.subjects}
+        locks: list[str] = []
+        for sid in shot.subject_refs:
+            subject = by_id.get(str(sid))
+            text = (subject.visual_lock if subject else "").strip()
+            if text and text not in locks:
+                locks.append(text)
+        if not locks:
+            return shot, []
+        base = shot.prompt_image.strip()
+        prompt = (base + ("；" if base else "") + "角色一致性：" + "；".join(locks))
+        return replace(shot, prompt_image=prompt), locks
+
+    def _generate_still(
+        self, shot: Shot, brief: ProjectBrief, board: Storyboard, attempt: int, seed: int
+    ) -> tuple[Path, str] | None:
         frame_path = self.ctx.work_dir / "frames" / f"shot{shot.id:02d}_a{attempt}.png"
         intent_path = self.ctx.work_dir / "frames" / f"shot{shot.id:02d}_intent.png"
-        # 分镜示意帧（人工对照用，永远产出）
-        render_still(shot, brief, self.genre, intent_path, total_shots=len(board.shots), show_guides=self.guides)
+        # 分镜示意帧（人工对照用，永远产出）。用原稿而不是加锁版本：
+        # 它代表"人写的分镜"，出图实际用的提示词另记在 generate 事件里。
+        render_still(shot, brief, self.genre, intent_path, total_shots=len(board.shots), show_guides=self.guides, scale=self.fixture_scale)
         shot.intent_path = str(intent_path)
+        gen_shot, locks = self._locked_prompt(shot, board)
         for provider in self.image_chain:
             ok, why = provider.available()
             if not ok:
@@ -1225,12 +1680,9 @@ class Pipeline:
                 t0 = time.perf_counter()
                 if provider.name == "offline":
                     # 占位帧：用镜头自身信息合成，保证与本镜一一对应
-                    out = render_still(shot, brief, self.genre, frame_path, total_shots=len(board.shots), show_guides=self.guides)
+                    out = render_still(gen_shot, brief, self.genre, frame_path, total_shots=len(board.shots), show_guides=self.guides, scale=self.fixture_scale)
                 else:
-                    out = provider.generate(shot, brief, frame_path, seed)
-                # 记下是谁出的：comfy 出的是真画面，offline 出的是示意图。
-                # _make_clip 要靠它决定背景用真图还是重画示意图。
-                shot.still_provider = provider.name
+                    out = provider.generate(gen_shot, brief, frame_path, seed)
                 self.log.event(
                     "generate",
                     f"镜 {shot.id} 第 {attempt} 次出图完成（{provider.name}）",
@@ -1239,8 +1691,9 @@ class Pipeline:
                     attempt=attempt,
                     ms=round((time.perf_counter() - t0) * 1000, 1),
                     file=str(out),
+                    subject_locks=locks or None,
                 )
-                return out
+                return out, provider.name
             except Exception as exc:  # noqa: BLE001
                 self.log.error(f"generate:shot{shot.id}", f"{provider.name} 出图失败：{exc}")
                 self.ctx.notes.append(f"镜 {shot.id} 的 {provider.name} 出图失败，已降级下一 provider")
@@ -1248,80 +1701,352 @@ class Pipeline:
         self.log.event("generate", f"镜 {shot.id} 所有出图 provider 都失败", shot=shot.id)
         return None
 
-    def _describe(self, image: Path, shot: Shot, brief: ProjectBrief, attempt: int) -> str:
-        """质检前置：把画面转成文字（提示词库 2.1）。
+    def _vision_client(self) -> Any:
+        """视觉评审客户端。VLM_BASE_URL/KEY 留空时回落到 LLM 的配置。"""
+        model = str(self.settings.get("VLM_MODEL") or "").strip()
+        if not model:
+            return None
+        if self._vlm_client is None:
+            base = str(self.settings.get("VLM_BASE_URL") or self.settings.get("LLM_BASE_URL") or "").strip()
+            key = str(self.settings.get("VLM_API_KEY") or self.settings.get("LLM_API_KEY") or "").strip()
+            if not base or not key:
+                return None
+            self._vlm_client = OpenAIChatClient(base_url=base, api_key=key, model=model)
+        return self._vlm_client
 
-        真实模式走 VLM；离线模式下用「镜头规格 + 确定性质量模型」生成文字描述，
-        让质检与重试逻辑能被真实触发（首次尝试约 35% 概率带缺陷，重试后通过）。
+    def _describe(self, image: Path, shot: Shot, brief: ProjectBrief, attempt: int) -> str:
+        """质检前置：读图、技术检查、再尝试视觉描述（提示词库 2.1）。
+
+        三种模式必须能区分开：
+
+        - `vlm`：真把图片发给多模态模型，评审结论基于画面；
+        - `simulated`：图片可读，但评审文字由镜头规格 + 确定性规则生成；
+        - `technical_failed`：图片不存在/无法解码，直接判技术检查失败。
+
+        以前无论哪种情况返回的都是同一段"看起来像评审"的文字，
+        两张根本不存在的图片也能得到相同描述——分数因此不能当作画面依据。
         """
+        technical = inspect_image(image)
+        payload: dict[str, Any] | None = None
+        mode = "simulated"
+        visual = "not_performed"
+
         vlm = self.settings.get("VLM_MODEL")
-        if self.ctx.live and vlm and self.settings.has("LLM_API_KEY"):
-            # 预留：接入 VLM 时把提示词库 2.1 的 system/user 模板发过去
+        client = self._vision_client()
+        if self.ctx.live and vlm and client is not None:
             sys_p = self.lib.system("2.1")
             user_p = self.lib.render_user(
                 "2.1", {"style": brief.style, "acceptance": shot.acceptance}, strict=False
             )
             try:
-                raw = self.creative.client.chat(sys_p, user_p, temperature=0.1) if self.creative.client else ""
+                vision = getattr(client, "chat_vision", None)
+                if vision is None:
+                    raise RuntimeError("当前模型客户端不支持图像输入")
                 from .common import extract_json
 
-                data = extract_json(raw)
-                return json.dumps(data, ensure_ascii=False)
+                parsed = extract_json(vision(sys_p, user_p, image, temperature=0.1))
+                if not isinstance(parsed, dict):
+                    raise RuntimeError("视觉评审返回的不是 JSON 对象")
+                payload = parsed
+                mode = "vlm"
+                visual = "performed" if technical.get("ok") else "failed"
             except Exception as exc:  # noqa: BLE001
-                self.log.error("vlm", f"VLM 描述失败，改用离线描述：{exc}")
-        return _offline_description(shot, attempt)
+                self.log.error("vlm", f"视觉评审失败，改用模拟评审（结果会明确标注）：{exc}")
+                payload = None
 
-    def _clean_from_real(self, src: Path, dst: Path, shot: Shot,
-                         scale: int, ctx: Any) -> Path:
-        """把真图放大到工作分辨率，作为无文字的背景。
+        if payload is None:
+            payload = json.loads(_offline_description(shot, attempt))
+            mode = "simulated" if technical.get("ok") else "technical_failed"
+            visual = "not_performed" if technical.get("ok") else "failed"
 
-        尺寸跟示意图保持一致（读 shot.intent_path 的实际像素 × scale），
-        这样竖屏/方屏画幅也不用单独判断——不然 9:16 的片子会被拉成 16:9。
-        """
-        from PIL import Image as _Image
+        # 技术检查用的是真实图片数据，无论走哪条评审路径都覆盖进去。
+        merged = dict(payload.get("technical") or {})
+        merged.update(technical)
+        payload["technical"] = merged
+        if not technical.get("ok"):
+            # 图都读不出来时，任何"评审结论"都不成立。
+            mode, visual = "technical_failed", "failed"
+        payload["review_mode"] = mode
+        payload["visual_check"] = visual
+        payload["review_rule"] = REVIEW_RULE_VERSION
+        payload["image_sha256"] = technical.get("sha256") or ""
 
-        target = None
+        if mode == "simulated" and not any("模拟评审" in note for note in self.ctx.notes):
+            self.ctx.notes.append(
+                "质检为模拟评审：规则引擎依据镜头规格与真实技术检查（尺寸/亮度/对比度）"
+                "打分，未做语义级画面评审；分数不代表视觉质量已通过"
+            )
+        return json.dumps(payload, ensure_ascii=False)
+
+    def _candidate_evidence(
+        self,
+        shot: Shot,
+        image: Path,
+        desc: str,
+        review: dict,
+        score: int,
+        verdict: str,
+        defect: str,
+        provider: str,
+        attempt: int,
+    ) -> dict[str, Any]:
+        """一个候选的完整证据。选定后整包绑定，不能用最后一次循环状态代替。"""
         try:
-            if shot.intent_path and Path(shot.intent_path).is_file():
-                with _Image.open(shot.intent_path) as ref:
-                    target = (ref.width * scale, ref.height * scale)
-        except Exception:  # noqa: BLE001
-            target = None
-        if target is None:
-            target = (1920 * scale, 1080 * scale)
+            info = json.loads(desc)
+        except (TypeError, ValueError):
+            info = {}
+        technical = info.get("technical") if isinstance(info, dict) else None
+        sha = str(
+            (info.get("image_sha256") if isinstance(info, dict) else "")
+            or (technical or {}).get("sha256")
+            or ""
+        )
+        mode = str(
+            (review.get("review_mode") if isinstance(review, dict) else "")
+            or info.get("review_mode")
+            or "simulated"
+        )
+        visual = str(
+            (review.get("visual_check") if isinstance(review, dict) else "")
+            or info.get("visual_check")
+            or "not_performed"
+        )
+        evidence_id = hashlib.sha256(
+            f"{shot.id}:{attempt}:{sha}:{provider}:{score}:{mode}".encode("utf-8")
+        ).hexdigest()[:16]
+        return {
+            "evidence_id": evidence_id,
+            "attempt": attempt,
+            "asset_id": sha[:16] if sha else "",
+            "path": str(image),
+            "sha256": sha,
+            "provider": str(provider or ""),
+            "quality": int(score),
+            "verdict": str(verdict or ""),
+            "defect": str(defect or ""),
+            "review_mode": mode,
+            "visual_check": visual,
+            "review_rule": str(info.get("review_rule") or REVIEW_RULE_VERSION),
+            "technical": technical if isinstance(technical, dict) else None,
+            "detail": info,
+        }
 
-        with _Image.open(src) as im:
-            im = im.convert("RGB").resize(target, _Image.LANCZOS)
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            im.save(dst, "PNG")
-        return dst
+    def _apply_evidence(self, shot: Shot, evidence: dict[str, Any]) -> None:
+        """把选中候选的整包证据写回镜头，保证图、哈希、技术检查来自同一张图。"""
+        if not evidence:
+            return
+        shot.evidence_id = str(evidence.get("evidence_id") or "")
+        shot.frame_source = str(evidence.get("provider") or "")
+        shot.frame_is_clean = shot.frame_source not in ("", "offline")
+        sha = str(evidence.get("sha256") or "")
+        shot.image_sha256 = sha
+        shot.review_mode = str(evidence.get("review_mode") or "")
+        shot.visual_check = str(evidence.get("visual_check") or "")
+        shot.review_rule = str(evidence.get("review_rule") or "")
+        technical = evidence.get("technical") if isinstance(evidence.get("technical"), dict) else {}
+        if technical:
+            shot.tech_ok = bool(technical.get("ok"))
+            shot.tech_reason = str(technical.get("reason") or "")
+            shot.image_width = int(technical.get("width") or 0)
+            shot.image_height = int(technical.get("height") or 0)
+            shot.image_mean = round(float(technical.get("mean") or 0.0), 2)
+            shot.image_contrast = round(float(technical.get("contrast") or 0.0), 2)
+
+    def _provider_identity(self) -> list[str]:
+        """出图 provider 的规范化身份，供生成缓存使用。绝不包含 API Key。"""
+        out: list[str] = []
+        for provider in self.image_chain:
+            name = str(getattr(provider, "name", "") or "")
+            if name == "comfy":
+                out.append(
+                    f"comfy:{getattr(provider, 'base_url', '')}:"
+                    f"{getattr(provider, 'template', '')}:{getattr(provider, 'max_edge', '')}"
+                )
+            elif name == "cloud":
+                out.append(
+                    f"cloud:{getattr(provider, 'base_url', '')}:{getattr(provider, 'model', '')}"
+                )
+            else:
+                out.append(f"{name}:{getattr(provider, 'provider_id', '')}")
+        return out
+
+    def _workflow_fingerprint(self) -> str:
+        """当前工作流目录的内容摘要。只改文件名不算，内容变了才算。"""
+        if self._workflow_hash is not None:
+            return self._workflow_hash
+        digest = hashlib.sha256()
+        root = resource_dir("workflows")
+        try:
+            files = sorted(p for p in root.rglob("*") if p.is_file())
+        except OSError:
+            files = []
+        for path in files:
+            digest.update(path.name.encode("utf-8"))
+            try:
+                digest.update(path.read_bytes())
+            except OSError:
+                continue
+        self._workflow_hash = digest.hexdigest()[:20]
+        return self._workflow_hash
+
+    def _reference_hashes(self, shot: Shot, board: Storyboard) -> dict[str, str]:
+        """被当前 provider 实际消费的参考图摘要。
+
+        当前所有 provider 的 `reference_capability()` 都是 False，因此返回空；
+        将来接入参考条件生成时，这里会自动把真正参与出图的素材纳入缓存依赖。
+        """
+        consumes = False
+        for provider in self.image_chain:
+            try:
+                ok, _why = provider.reference_capability()
+            except Exception:  # noqa: BLE001
+                ok = False
+            consumes = consumes or bool(ok)
+        if not consumes or not shot.subject_refs:
+            return {}
+        by_id = {str(s.id): s for s in board.subjects}
+        out: dict[str, str] = {}
+        for sid in shot.subject_refs:
+            subject = by_id.get(str(sid))
+            asset = str(((subject.reference or {}) if subject else {}).get("asset") or "")
+            if not asset:
+                continue
+            rel = Path(asset)
+            candidates = [
+                rel if rel.is_absolute() else self.ctx.project_dir / "plan" / rel,
+                self.ctx.project_dir / rel,
+            ]
+            for path in candidates:
+                try:
+                    if path.is_file():
+                        out[str(sid)] = hashlib.sha256(path.read_bytes()).hexdigest()[:20]
+                        break
+                except OSError:
+                    continue
+        return out
+
+    def _frame_inputs(self, shot: Shot, board: Storyboard) -> dict[str, Any]:
+        """离线占位帧真正吃进去的绘制输入。
+
+        真实出图（ComfyUI/云端）只吃提示词，改文案不该让缓存失效，所以文案
+        只在 provider 链里含 offline 时纳入。
+        `start`/`end` 故意不纳入：改时间轴只该重合成，不该重出图。代价是离线
+        占位帧右下角的时间码可能停在旧值——正式出图不受影响，属已知边界。
+        """
+        inputs: dict[str, Any] = {
+            "guides": bool(self.guides),
+            "scale": round(float(self.fixture_scale), 4),
+            "total_shots": int(len(board.shots)),
+        }
+        if any(str(getattr(p, "name", "")) == "offline" for p in self.image_chain):
+            inputs["text"] = {
+                "visual": str(shot.visual or ""),
+                "act": str(shot.act or ""),
+                "camera": str(shot.camera or ""),
+                "acceptance": str(shot.acceptance or ""),
+                "caption": caption_of(shot),
+            }
+        return inputs
+
+    def _gen_signature(
+        self, shot: Shot, brief: ProjectBrief, board: Storyboard,
+        candidates: int, gen_shot: Shot, locks: list[str], seed: int,
+    ) -> str:
+        return gcache.signature(
+            shot_id=shot.id,
+            prompt=gen_shot.prompt_image,
+            visual_locks=locks,
+            brief_key=json.dumps(brief.to_dict(), ensure_ascii=False, sort_keys=True),
+            genre=self.genre.key,
+            palette=self.palette_id,
+            preview=self.preview,
+            size=generation_size(brief.aspect_ratio),
+            seed=seed,
+            candidates=candidates,
+            provider_identity=self._provider_identity(),
+            workflow_fingerprint=self._workflow_fingerprint(),
+            reference_hashes=self._reference_hashes(shot, board),
+            frame_inputs=self._frame_inputs(shot, board),
+        )
+
+    def _restore_generation(self, shot: Shot, record: dict[str, Any]) -> bool:
+        """把生成缓存恢复成“选中候选 + 完整证据”。"""
+        image = Path(str(record.get("image") or ""))
+        if not image.is_file():
+            return False
+        evidence = record.get("evidence") if isinstance(record.get("evidence"), dict) else {}
+        if not evidence:
+            return False
+        shot.frame_path = str(image)
+        shot.quality = int(record.get("quality") or 0)
+        shot.status = str(record.get("status") or "approved")
+        shot.verdict = str(evidence.get("verdict") or shot.status)
+        shot.defect_type = str(evidence.get("defect") or "none")
+        shot.attempts = int(evidence.get("attempt") or 1)
+        shot.provider = str(record.get("provider") or shot.provider)
+        shot.candidate_evidence = list(record.get("candidates") or [])
+        self._apply_evidence(shot, evidence)
+        # 缓存图本身就是选中图；保证来源 provider 与干净属性一起恢复。
+        if not shot.frame_source:
+            shot.frame_source = str(record.get("provider") or "")
+            shot.frame_is_clean = shot.frame_source not in ("", "offline")
+        return True
+
+    def _clip_key(self, shot: Shot, brief: ProjectBrief, board: Storyboard) -> str:
+        """这一镜片段的内容指纹。见 pipeline/clipcache.py 的字段说明。"""
+        gen_shot, locks = self._locked_prompt(shot, board)
+        return build_clip_key(
+            shot, brief, board,
+            genre=self.genre.key,
+            palette=self.palette_id,
+            preview=self.preview,
+            work_scale=self.work_scale,
+            still_scale=self.still_scale,
+            guides=self.guides,
+            providers=[
+                f"{getattr(p, 'name', '')}:{getattr(p, 'provider_id', '')}"
+                for p in self.video_chain
+            ],
+            video_size=self._video_size,
+            image_sha256=shot.image_sha256,
+            effective_prompt=gen_shot.prompt_image,
+            workflow_fingerprint=self._workflow_fingerprint(),
+            reference_hashes=self._reference_hashes(shot, board),
+        )
 
     def _make_clip(self, shot: Shot, brief: ProjectBrief, board: Storyboard) -> Path | None:
         clip_path = self.ctx.work_dir / "clips" / f"shot{shot.id:02d}.mp4"
-        # 出片用的输入必须是**干净背景**（无文字）：所有文字由 overlay 一帧叠加，
-        # 否则背景里烘死的标题/字幕会和 overlay 叠成重影（实测踩过）。
-        clean_path = self.ctx.work_dir / "frames" / f"shot{shot.id:02d}_clean.png"
-        # 背景优先用**真图**（ComfyUI 出的那张），只有它是示意图时才重画。
-        # 原实现无条件 render_still，等于把出图链路的结果整个丢掉——
-        # 日志里每镜都写着"出图完成（comfy）"，成片里却是示意图（实测踩过）。
-        real = Path(shot.frame_path) if shot.frame_path else None
-        if (shot.still_provider not in ("", "offline")) and real and real.is_file():
-            clean = self._clean_from_real(real, clean_path, shot, self.work_scale, self.ctx)
-        elif self.require_real_image:
-            raise ImageError(
-                f"镜 {shot.id} 没有可用的真图（provider={shot.still_provider or '无'}），"
-                "已勾选「必须真图」；请确认 ComfyUI 正常后再试。")
+        key = self._clip_key(shot, brief, board)
+        # 输入没变就复用旧片段。单镜重拍的目标镜永远重画——用户点它的目的
+        # 就是"换一张画面"，即使规格没变也不该被缓存挡住。
+        if not self.no_cache and shot.id != self.only_shot:
+            if clip_state(clip_path, key) == "current":
+                self.log.event(
+                    "clip",
+                    f"镜 {shot.id} 复用缓存片段（画面输入与渲染规格未变）",
+                    shot=shot.id,
+                    cached=True,
+                )
+                return clip_path
+        # 真实出图（ComfyUI/云端）产出的就是干净背景，本地运动视频必须用它；
+        # 以前这里无条件重画占位背景，导致“评审过的图”和“进入视频的图”不是
+        # 同一张。离线占位帧自带文字，才需要重画无字背景。
+        selected = Path(shot.frame_path) if shot.frame_path else None
+        if shot.frame_is_clean and selected is not None and selected.is_file():
+            clean = selected
+            self.log.event(
+                "clip", f"镜 {shot.id} 使用已选生成图作为运动背景",
+                shot=shot.id, source=shot.frame_source, file=str(selected),
+            )
         else:
             clean = render_still(
-                shot, brief, self.genre, clean_path,
+                shot, brief, self.genre,
+                self.ctx.work_dir / "frames" / f"shot{shot.id:02d}_clean.png",
                 total_shots=len(board.shots), show_guides=False, with_text=False,
-                scale=self.work_scale,
+                scale=self.still_scale,
             )
-        overlay = render_overlay(
-            shot, brief, self.genre,
-            self.ctx.work_dir / "frames" / f"shot{shot.id:02d}_overlay.png",
-            total_shots=len(board.shots), show_guides=self.guides, scale=self.work_scale,
-        )
+        # 文字层不再烘进片段：片段只保留干净背景，字幕/标题在最终合成时叠加。
+        # 这样改字幕、调偏移、清空字幕都只需重合成，不会出现“SRT 改了、画面还是旧字”。
         for provider in self.video_chain:
             ok, why = provider.available()
             if not ok:
@@ -1339,11 +2064,7 @@ class Pipeline:
                     safeguards=[
                         f"Frame passed Jev quality review at {shot.quality}/4",
                         "Budget check passed" if self.ctx.budget_ok else "Budget exceeded",
-                        # 用户勾了「必须真图」= 明确知道要走付费云端、并已配 Key，
-                        # 这就是**授权**。此时不该再标 stakes=high 让护栏回 confirm——
-                        # 那会导致每个 deep_review 镜头都被拦下、静默降级成 kenburns，
-                        # 用户看到"云端配了却没用上"（实测踩过）。
-                        f"stakes={'high' if (shot.route == 'deep_review' and not self.require_real_image) else 'medium'}",
+                        f"stakes={'high' if shot.route == 'deep_review' else 'medium'}",
                     ],
                     policy=["Shots with stakes=high require a confirm decision before spending"],
                     reversibility="not_reversible",
@@ -1364,17 +2085,31 @@ class Pipeline:
                 if provider.name == "kenburns":
                     # 出片前自查输入：ffmpeg 报「No such file」时很难看出是渲染没落盘
                     # 还是路径/权限问题，这里先明确报缺哪个文件（实测踩过）。
-                    missing = [str(p) for p in (clean, overlay) if not p.exists()]
+                    missing = [str(clean)] if not clean.exists() else []
                     if missing:
                         raise FileNotFoundError(
                             "出片输入缺失：" + "、".join(missing)
                             + "（若文件确实存在，说明 ffmpeg 无权读取该路径，"
                             + "常见于受限终端/沙箱/杀软拦截；请在普通命令行或 PowerShell 中重试）"
                         )
-                    provider.make_clip(shot, clean, clip_path, shot.duration, overlay=overlay, work=self.work_scale)
+                    provider.make_clip(shot, clean, clip_path, shot.duration, work=self.work_scale)
                 else:
                     provider.make_clip(shot, Path(shot.frame_path), clip_path, shot.duration)
                 shot.clip_path = str(clip_path)
+                write_clip_key(clip_path, key, provider=provider.name)
+                if provider.name == "cloud":
+                    # 只在调用成功后记一条：失败/降级不应出现在费用台账里。
+                    # 台账落在项目根（不是 preview 命名空间），费用看板才能汇总。
+                    record_cost(
+                        self.ctx.project_dir,
+                        kind="video",
+                        provider=str(getattr(provider, "provider_id", "") or "cloud-video"),
+                        amount_cny=cost,
+                        units=shot.duration,
+                        unit="s",
+                        rate_cny=CLOUD_COST_CNY,
+                        note=f"镜 {shot.id} 云端图生视频（按 {CLOUD_COST_CNY} 元/秒估价）",
+                    )
                 self.log.event(
                     "clip",
                     f"镜 {shot.id} 片段完成（{provider.name}，{shot.duration:.1f}s）",
@@ -1476,9 +2211,11 @@ class Pipeline:
                 self.log.error(f"tts:shot{shot.id}", f"配音失败：{exc}")
                 gap = self.ctx.work_dir / "vo" / f"shot{shot.id:02d}_gap.wav"
                 try:
+                    import subprocess
+
                     from .video import FFMPEG
 
-                    run_hidden(
+                    subprocess.run(
                         [FFMPEG, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
                          "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
                          "-t", f"{shot.duration:.3f}", str(gap)],
@@ -1588,6 +2325,15 @@ def _rewrite(prompt: str, focus: str) -> str:
     if add in prompt:
         return prompt
     return f"{prompt}, {add}"
+
+
+def _review_label(mode: str, visual: str) -> str:
+    """日志里的一句话结论。模拟评审不能显示成"质检通过"。"""
+    if mode == "vlm":
+        return "视觉评审" if visual == "performed" else f"视觉评审·{visual}"
+    if mode == "technical_failed":
+        return "技术检查失败"
+    return "模拟评审·未做视觉检查"
 
 
 def _offline_description(shot: Shot, attempt: int) -> str:

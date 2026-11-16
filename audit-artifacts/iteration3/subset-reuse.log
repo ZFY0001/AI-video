@@ -1,0 +1,110 @@
+
+[36] 第二轮：归属、母版、证据、快照、缓存、字幕
+  [PASS] 归属失败向上抛并中止任务
+  [PASS] on_start 在 ctx.prepare 之前
+  [PASS] Engine 不再吞掉归属前置异常
+  [PASS] 创建任务归属失败返回 503
+  [PASS] 归属失败不留下空项目目录
+  [PASS] 任务预留阻止第二条请求
+  [PASS] 错误预留令牌不能创建任务
+  [PASS] 旧项目无 manifest 时回落到 output/final.mp4
+  [PASS] 发布母版后解析到绘制版
+  [PASS] 母版 manifest 记录任务与快照
+  [PASS] 母版必须位于项目目录内
+  [PASS] manifest 目标丢失时不偷偷回落到基础版
+  [PASS] 任务完成时发布当前母版
+  [PASS] 历史详情读取当前母版
+  [PASS] 本地视频使用已选生成图而不是重画占位背景
+  [PASS] 离线占位帧仍重画无字背景
+  [PASS] 选中候选完整绑定证据
+  [PASS] 复核接口返回 evidence_id 与候选列表
+  [PASS] 混合质检汇总按模式计数
+  [PASS] 同版本两次冻结使用不同快照目录
+  [PASS] 后一次冻结不改写前一次快照
+  [PASS] 快照 manifest 记录文件摘要
+  [PASS] 清理旧快照时保留活动任务引用
+  [PASS] 忙碌拒绝不写快照
+  [PASS] 生成签名稳定
+  [PASS] 视觉锁定变化让生成签名失效
+  [PASS] 工作流/模型变化让生成签名失效
+  [PASS] 辅助线/倍率/总镜数变化让生成签名失效
+  [PASS] 离线占位帧文案变化让生成签名失效
+  [PASS] 离线链纳入文案与绘制参数
+  [PASS] 离线文案改动进入生成签名
+  [PASS] 时间轴改动不进入生成签名
+  [PASS] 真实出图链不因文案改动失效
+  [PASS] 生成缓存命中并校验图像摘要
+  [PASS] 缓存图像被改坏时按未命中处理
+  [PASS] 片段指纹纳入选中图与实际提示词
+  [PASS] 片段指纹仍排除时间轴镜长
+  [PASS] 生成缓存检查发生在出图之前
+  [PASS] 读回分镜会清空选中图摘要
+  [PASS] 未恢复证据时旧片段被判过期
+  [PASS] 证据缺失时不放行并记录原因
+  [PASS] 恢复证据后旧片段可复用
+  [PASS] 恢复证据不掩盖真实内容改动
+  [PASS] 单镜重拍不恢复目标镜证据
+  [PASS] 两条复用路径都恢复证据
+  [PASS] 生成缓存命中后不再出图且直接出片
+  [PASS] 烧录模式包含固定层与逐条字幕卡
+  [PASS] sidecar 模式只保留固定层
+  [PASS] 字幕卡是透明底且尺寸正确
+  [PASS] 文字层时间窗 内 抽帧符合预期
+  [PASS] 文字层时间窗 外 抽帧符合预期
+  [PASS] RunRequest 支持字幕模式
+  [PASS] RenderRequest 支持字幕模式
+  [PASS] 保存字幕模式进入项目设置
+  [PASS] compose 有 fit_clip
+  [PASS] fit_clip 短片段用 tpad 冻结末帧
+  [PASS] fit_clip 长片段裁尾（-t 目标时长）
+  [PASS] fit_clip 与 make_clip 的编码器一致（"-c:v", "libx264"）
+  [PASS] fit_clip 与 make_clip 的preset一致（"-preset", "medium"）
+  [PASS] fit_clip 与 make_clip 的crf一致（"-crf", "20"）
+  [PASS] fit_clip 与 make_clip 的像素格式一致（"-pix_fmt", "yuv420p"）
+  [PASS] fit_clip 与 make_clip 的帧率一致（"-r", str(FPS)）
+  [PASS] fit_clip 长度差在一帧内时原样返回（不白重编码）
+  [PASS] RunOptions 有 recompose 且默认关闭
+  [PASS] Pipeline 有 recompose_from_plan
+  [PASS] Pipeline 有 _recompose
+  [PASS] recompose_from_plan 走 _sync_starts（不重算镜长）
+  [PASS] recompose_from_plan 不调 _rebuild_timeline
+  [PASS] _recompose 用 fit_clip 对齐片段
+  [PASS] _recompose 把对齐结果写到 clips_fit（不覆盖源片段）
+  [PASS] _recompose 按 board.shots 顺序收集片段（重排即改列表次序）
+  [PASS] 重合成复用配音（reuse_voice=True）
+  [PASS] _voiceover 支持 reuse
+  [PASS] 复用配音仍重新 fit（镜长变了要重对齐）
+  [PASS] 有 POST /plan/{run_id}/recompose
+  [PASS] 有 POST /plan/{run_id}/shots/reorder
+  [PASS] 代码绘制模式拒绝只重合成（整段视频没有逐镜片段）
+  [PASS] ReorderRequest 拒绝空顺序
+  [PASS] 重排拒绝非完整置换（防悄悄少镜头）
+  [PASS] 重排后顺序真的是 3→1→2
+  [PASS] 重排后 start 按新顺序重算
+  [PASS] 重排不改镜号、不改总时长
+  [PASS] 没拍过就拒绝只重合成（没有片段可重拼）
+  [PASS] 片段缺失时点名缺哪几镜（不是起任务后才失败）
+  [PASS] 前端有 recomposePlan
+  [PASS] 前端有 reorderShots
+  [PASS] useRun 有 startRecompose
+  [PASS] 拆解页有「只重合成」按钮
+  [PASS] 拆解页有上移/下移
+  [PASS] 拆解页把 onRecompose 传下去了
+  [PASS] App 把 onRecompose 接上了
+
+[17] 单镜重拍（只拍一镜，其余复用）
+  [PASS] RunOptions 有 only_shot，默认 0（整片拍摄）
+  [PASS] render_from_plan 收 only_shot
+  [PASS] _sync_starts 不抛异常
+  [PASS] 镜长一个都没被改
+  [PASS] start 按累加重排
+  [PASS] 总时长按累加回写
+  [PASS] 镜号不存在时报错
+  [PASS] 代码绘制模式拒绝单镜重拍
+  [PASS] 有单镜重拍接口
+  [PASS] 前端有 renderShot
+  [PASS] useRun 有 startShot
+  [PASS] 拆解页有「重拍这一镜」按钮
+  [PASS] App 把 onReshoot 接上了
+
+结果：104 通过 / 0 失败

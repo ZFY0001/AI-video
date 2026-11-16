@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -74,22 +75,15 @@ DEFAULTS: dict[str, str] = {
     "LLM_MODEL": "deepseek-chat",
     "LLM_API_KEY": "",
     "VLM_MODEL": "",
+    #: 视觉评审可单独走一个端点/Key；留空则沿用 LLM 的配置。
+    "VLM_BASE_URL": "",
+    "VLM_API_KEY": "",
     # Jev 决策层。官方文档在 docs.typesafe.ai，官方 SystemOne 端点为 api.typesafe.ai；
     # 但 2026-10-14 核查时官方端点全路径返回 HTTP 451，而 jevai.org 的 /api/v1/decisions/*
     # 路径已被文档确认，故默认用后者。切换端点只改这一处。
     "JEV_BASE_URL": "https://www.jevai.org",
     "JEV_API_KEY": "",
     "COMFYUI_BASE_URL": "http://127.0.0.1:8188",
-    # 视频/出图：按家分开存 Key，由 model_registry 决定实际用哪家
-    "MINIMAX_API_KEY": "",
-    "MINIMAX_BASE_URL": "https://api.minimax.chat",
-    "ZHIPU_API_KEY": "",
-    "ZHIPU_BASE_URL": "https://open.bigmodel.cn/api/paas/v4",
-    "IMAGE_PROVIDER": "minimax",
-    "IMAGE_MODEL": "image-01",
-    "VIDEO_PROVIDER": "minimax",
-    "VIDEO_MODEL": "MiniMax-Hailuo-2.3-Fast",
-    "IMAGE_MODE": "cloud",
     "VIDEO_API_BASE_URL": "",
     "VIDEO_API_KEY": "",
     "TTS_ENGINE": "auto",
@@ -179,18 +173,25 @@ class RunContext:
     verbose: bool = False
     cost_used_cny: float = 0.0
     notes: list[str] = field(default_factory=list)
+    #: 产物命名空间。预览用 "preview"，把低清成片与工作文件放到
+    #: `runs/<id>/preview/` 下，正式产物一个字节都不碰。
+    namespace: str = ""
+
+    @property
+    def base_dir(self) -> Path:
+        return self.project_dir / self.namespace if self.namespace else self.project_dir
 
     @property
     def out_dir(self) -> Path:
-        return self.project_dir / "output"
+        return self.base_dir / "output"
 
     @property
     def work_dir(self) -> Path:
-        return self.project_dir / "work"
+        return self.base_dir / "work"
 
     @property
     def log_path(self) -> Path:
-        return self.project_dir / "run.jsonl"
+        return self.base_dir / "run.jsonl"
 
     def prepare(self) -> None:
         for sub in (self.out_dir, self.work_dir, self.work_dir / "frames", self.work_dir / "clips"):
@@ -211,12 +212,17 @@ def existing_run_context(
     live: bool = False,
     dry_run: bool = False,
     verbose: bool = False,
+    namespace: str = "",
 ) -> RunContext:
     """复用**已有**的运行目录。
 
     从拆解文件拍摄时必须用它，而不是 `new_run_context()`：plan 与成片要落在同一个
     `runs/<run_id>/` 下，否则拆解页拿着的 run_id 在拍完之后就找不到自己的成片，
     成片墙上还会多出一条主题重复的记录。
+
+    `namespace="preview"` 时产物落在 `runs/<run_id>/preview/`：预览再低清也是
+    独立产物，不能覆盖正式成片，也不能和正式渲染共用 work/clips（否则随后的
+    单镜重拍会拿预览片段去拼正式成片）。
     """
     return RunContext(
         run_id=run_id,
@@ -226,14 +232,48 @@ def existing_run_context(
         live=live,
         dry_run=dry_run,
         verbose=verbose,
+        namespace=namespace,
     )
 
 
-def new_run_context(project_name: str, settings: Settings, live: bool, dry_run: bool, verbose: bool) -> RunContext:
+def allocate_run_id(project_name: str, root: Path | None = None) -> tuple[str, Path]:
+    """分配一个**独占**的运行 ID，并把目录建出来。
+
+    ID 由"秒级时间戳 + 主题前 20 字 + 3 字节随机后缀"组成。只有时间戳与主题时，
+    同一秒内对同一主题发两次就会得到同一个 ID、同一个目录——`POST /plan` 又不经过
+    渲染用的单任务 Registry，并发请求会互相覆盖文件、归属还会被 REPLACE 掉。
+
+    `mkdir(exist_ok=False)` 是第二道保证：即使随机后缀撞了，也只会进入下一轮，
+    不会静默复用别人的目录。
+    """
+    base = Path(root) if root is not None else ROOT
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     safe = "".join(ch for ch in project_name if ch not in '\\/:*?"<>|').strip() or "untitled"
-    run_id = f"{stamp}-{safe[:20]}"
-    project_dir = ROOT / "runs" / run_id
+    for _ in range(16):
+        run_id = f"{stamp}-{safe[:20]}-{secrets.token_hex(3)}"
+        project_dir = base / "runs" / run_id
+        try:
+            project_dir.mkdir(parents=True, exist_ok=False)
+            return run_id, project_dir
+        except FileExistsError:
+            continue
+    raise RuntimeError("无法分配唯一的运行 ID，请稍后重试")
+
+
+def new_run_context(
+    project_name: str,
+    settings: Settings,
+    live: bool,
+    dry_run: bool,
+    verbose: bool,
+    run_id: str = "",
+    namespace: str = "",
+) -> RunContext:
+    """新建运行上下文。给了 `run_id` 就复用它（目录已由调用方预分配）。"""
+    if run_id:
+        project_dir = ROOT / "runs" / run_id
+    else:
+        run_id, project_dir = allocate_run_id(project_name)
     return RunContext(
         run_id=run_id,
         root=ROOT,
@@ -242,4 +282,5 @@ def new_run_context(project_name: str, settings: Settings, live: bool, dry_run: 
         live=live,
         dry_run=dry_run,
         verbose=verbose,
+        namespace=namespace,
     )

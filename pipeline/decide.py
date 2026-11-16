@@ -43,6 +43,9 @@ JEV_ENDPOINTS = {
 # 提示词库 2.2 的 confidence 阈值
 MIN_ROUTE_CONFIDENCE = 0.6
 
+#: 打分规则版本。分数与规则版本一起落盘，复查时才知道"当时按什么标准判的"。
+REVIEW_RULE_VERSION = "rule-2026.11"
+
 
 def coerce_quality(review: dict) -> int:
     """把决策层返回的分数容错解析成 1-4（失败返回 0 = 无法判定）。
@@ -198,6 +201,29 @@ class RuleDecider:
     # -------------------------------------------------- 2.1/2.4 质检
     def review_quality(self, state: dict) -> dict:
         desc = str(state.get("candidate_desc", ""))
+        try:
+            info = json.loads(desc)
+        except (TypeError, ValueError):
+            info = {}
+        mode = str(info.get("review_mode") or "simulated") if isinstance(info, dict) else "simulated"
+        technical = info.get("technical") if isinstance(info, dict) else None
+        visual = str(info.get("visual_check") or "not_performed") if isinstance(info, dict) else "not_performed"
+
+        # 图片读不出来/无法解码是硬失败：不能继续按镜头文字给分，
+        # 否则"图片根本不存在"也能拿到 3 分并进入成片。
+        if isinstance(technical, dict) and technical.get("ok") is False:
+            return {
+                "quality": 1,
+                "verdict": "reject",
+                "defect_type": "image_unreadable",
+                "defects": 1,
+                "checks": [],
+                "review_mode": "technical_failed",
+                "visual_check": "failed",
+                "rule_version": REVIEW_RULE_VERSION,
+                "guidance": f"技术检查失败：{technical.get('reason') or '图片不可用'}",
+            }
+
         defects = _defect_count(desc)
         defect_type = _defect_type(desc)
         attempt = int(state.get("attempt") or 1)
@@ -216,6 +242,10 @@ class RuleDecider:
             "defect_type": defect_type,
             "defects": defects,
             "checks": checks,
+            # 模拟模式也能给分，但必须带上"这不是视觉评审"的标记。
+            "review_mode": mode,
+            "visual_check": visual,
+            "rule_version": REVIEW_RULE_VERSION,
             "guidance": f"rule-engine: {passed}/{total} 项验收通过，可见缺陷 {defects} 处，第 {attempt} 次尝试",
         }
 

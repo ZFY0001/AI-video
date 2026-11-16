@@ -28,6 +28,46 @@ export interface ProfileStats {
 }
 
 const TOKEN_KEY = 'yiyan.token'
+const GUEST_KEY = 'yiyan.guest'
+
+/** 访客凭据：随机 32 位十六进制，只存在这台浏览器里。
+ *
+ * 游客创建的项目和任务必须有归属，否则任何能访问本机服务的人都能读、能取消。
+ * 它不是账号，也不换 token——登录后服务端只认账号，不会把游客项目带过去。
+ */
+function readGuestId(): string {
+  try {
+    const saved = localStorage.getItem(GUEST_KEY)
+    if (saved && /^[0-9a-f]{32}$/.test(saved)) return saved
+  } catch {
+    /* 隐私模式：退到内存值，本次会话内仍可用 */
+  }
+  const bytes = new Uint8Array(16)
+  crypto.getRandomValues(bytes)
+  const id = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
+  try {
+    localStorage.setItem(GUEST_KEY, id)
+  } catch {
+    /* ignore */
+  }
+  return id
+}
+
+let guestId = readGuestId()
+
+export function getGuestId(): string {
+  return guestId
+}
+
+export function guestHeaders(): Record<string, string> {
+  return { 'X-Guest-Id': guestId }
+}
+
+/** 媒体地址凭据后缀：`<img>` / `<video>` 带不了请求头，只能进 URL。 */
+export function mediaCredentialQuery(sep: '?' | '&' = '?'): string {
+  if (token) return `${sep}token=${encodeURIComponent(token)}`
+  return `${sep}guest=${encodeURIComponent(guestId)}`
+}
 
 interface Snapshot {
   user: User | null

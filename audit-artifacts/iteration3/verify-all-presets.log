@@ -1,0 +1,1099 @@
+=== 一言片场 · 自检 ===
+
+[1] 输入清洗与题材识别
+  [PASS] 清洗：给我的家乡方城烩面做一条 1… → 家乡方城烩面
+  [PASS] 题材：给我的家乡方城烩面做一条 1… → 烟火美食
+  [PASS] 清洗：帮我生成一个 30 秒的视频… → 城市夜景
+  [PASS] 题材：帮我生成一个 30 秒的视频… → 城市宣传
+  [PASS] 清洗：做条 60s 短片，讲一位老… → 一位老木匠的故事
+  [PASS] 题材：做条 60s 短片，讲一位老… → 人物故事
+  [PASS] 清洗：请给我来一个新品手机发布视频… → 新品手机发布
+  [PASS] 题材：请给我来一个新品手机发布视频… → 产品商业
+  [PASS] 清洗：来一条关于古镇非遗的短片 4… → 古镇非遗
+  [PASS] 题材：来一条关于古镇非遗的短片 4… → 国风古建
+  [PASS] 主题槽位：方城烩面 → 地点=方城/主体=烩面
+  [PASS] 主题槽位：一位老木匠的故事 → 主体=老木匠（不吞进「故事」）
+  [PASS] 清洗不产生空串
+
+[14] 本机请求绕过系统代理
+  [PASS] 本机判定：http://127.0.0.1:8188/system_stats → True
+  [PASS] 本机判定：http://127.9.9.9/x → True
+  [PASS] 本机判定：http://localhost:11434/api/generate → True
+  [PASS] 本机判定：http://[::1]:8080/ → True
+  [PASS] 本机判定：http://0.0.0.0:8000/ → True
+  [PASS] 本机判定：https://api.openai.com/v1/chat/completions → False
+  [PASS] 本机判定：https://dashscope.aliyuncs.com/api/v1 → False
+  [PASS] 本机判定：(空) → False
+  [PASS] Request 对象也能取到主机名
+  [PASS] 不带代理的 opener 确实没有任何 ProxyHandler
+  [PASS] 本地服务能直连拿到 200（代理在就会被换成 502）
+  [PASS] 无代理时不会误报代理问题
+  [PASS] 服务没在跑时说「连接被拒绝」而不是甩 HTTP 错误
+  [PASS] 云端地址的 HTTP 错误不提本机代理
+  [PASS] 超时有专门提示（ComfyUI 显存不足会卡住不返回）
+
+[15] 启动器（双击即可用）
+  [PASS] 两个启动器、桌面入口、前端工程都在
+  [PASS] 客户端 bat 是纯 ASCII（cmd 按 GBK 读，中文会变成乱命令）
+  [PASS] 客户端 bat 先切到脚本所在目录（双击时 cwd 是 System32）
+  [PASS] 客户端 bat 用项目内 .venv 的解释器
+  [PASS] 客户端 bat 的失败分支会 pause（否则一闪就没）
+  [PASS] Web 版 bat 是纯 ASCII（cmd 按 GBK 读，中文会变成乱命令）
+  [PASS] Web 版 bat 先切到脚本所在目录（双击时 cwd 是 System32）
+  [PASS] Web 版 bat 用项目内 .venv 的解释器
+  [PASS] Web 版 bat 的失败分支会 pause（否则一闪就没）
+  [PASS] 客户端 bat 启动前检查 web\dist\index.html
+  [PASS] 客户端 bat 缺产物时给出构建命令
+  [PASS] 客户端 bat 用 pythonw 起窗口（不留黑框）
+  [PASS] Web 版 bat 起的是 server 包（不是旧 GUI 入口）
+  [PASS] Web 版 bat 支持 rebuild 参数
+  [PASS] Web 版 bat 会找 node（PATH 里没有就补常见安装目录）
+
+[1b] 解说词质量（病句回归）
+  [PASS] 解说词无病句：给我的家乡方城烩面做一条…
+  [PASS] 解说词句句收尾：给我的家乡方城烩面做一条…
+  [PASS] 片名干净：给我的家乡方城烩面做一条… → 烩面·烟火
+  [PASS] 解说词无病句：讲一位老木匠的故事…
+  [PASS] 解说词句句收尾：讲一位老木匠的故事…
+  [PASS] 片名干净：讲一位老木匠的故事… → 老木匠·人物
+  [PASS] 解说词无病句：帮我生成一个 30 秒的…
+  [PASS] 解说词句句收尾：帮我生成一个 30 秒的…
+  [PASS] 片名干净：帮我生成一个 30 秒的… → 夜景·城市
+  [PASS] 解说词无病句：新品手机发布宣传片…
+  [PASS] 解说词句句收尾：新品手机发布宣传片…
+  [PASS] 片名干净：新品手机发布宣传片… → 发布·产品
+  [PASS] 解说词无病句：古镇非遗短片…
+  [PASS] 解说词句句收尾：古镇非遗短片…
+  [PASS] 片名干净：古镇非遗短片… → 非遗·国风
+
+[2] 提示词库
+  [PASS] 章节与槽位齐全
+  [PASS] 决策请求体全部是合法 JSON
+  [PASS] 剧本系统提示词含时长占位符
+  [PASS] 用户模板渲染成功
+  [PASS] 缺变量时严格模式报错
+  [PASS] 负面提示词非空
+
+[3] 决策层规则
+  [PASS] 模型路由：本地约束下不选云端
+  [PASS] 模型路由：给出 confidence
+  [PASS] 任务分级：关键镜头 → deep_review
+  [PASS] 任务分级：普通镜头 → proceed_fast
+  [PASS] 质检：合格画面 → accept
+  [PASS] 质检：带缺陷画面 → 不 accept
+  [PASS] 质检：分档落在 1-4
+  [PASS] N 选 1：选出无缺陷候选
+  [PASS] 重试：首次失败 = retry_same
+  [PASS] 重试：同缺陷 ×2 → 强制 rewrite_prompt
+  [PASS] 重试：同缺陷 ×3 → 强制 skip
+  [PASS] 重试：attempt ≥ max → 强制 switch_model
+  [PASS] 重试：保险层只升不降（skip 不会被降级）
+  [PASS] 护栏：证据齐全 → allow
+  [PASS] 护栏：预算缺失 → deny
+  [PASS] 护栏：高风险 → confirm
+
+[4] 数据契约
+  [PASS] 时间轴累加 = 总时长
+  [PASS] 首镜起点为 0
+  [PASS] 末镜终点 = 总时长
+  [PASS] 非均分时长也能对齐
+  [PASS] 10 镜 / 15 秒不产生负数时长
+  [PASS] 10 镜 / 15 秒仍严格等于总时长
+  [PASS] 10 镜 / 15 秒起点连续无跳变
+  [PASS] 12 镜 / 15 秒不产生负数时长
+  [PASS] 12 镜 / 15 秒仍等于总时长
+  [PASS] 单镜时全长给该镜
+  [PASS] 时长充裕时按权重等比分配（回归）
+
+[4c] MV 模式 · 音乐输入与时长权威
+  [PASS] 空音乐输入不启用 MV 模式
+  [PASS] 只给空白路径也不算 MV 模式
+  [PASS] 给了路径即启用 MV 模式
+  [PASS] 默认上屏文字来源是歌词
+  [PASS] 歌词行数统计忽略空行
+  [PASS] 音乐摘要可序列化（含 duration）
+  [PASS] 音乐摘要不泄漏整段歌词原文
+  [PASS] 能探测到音频时长
+  [PASS] 时间轴严格对齐音频时长（含小数）
+  [PASS] 短音乐不会被退回默认时长
+  [PASS] 音乐文件不存在时明确报错
+  [PASS] 音轨标注：音乐不自称配音
+  [PASS] 音轨标注：无音频时如实说是静音轨
+  [PASS] 音轨标注：真实配音如实标出来源
+  [PASS] 音轨标注：空结果不抛异常
+
+[4d] 音乐混音（amix / loudnorm / 淡入淡出）
+  [PASS] 两轨进 amix
+  [PASS] amix 关闭自动衰减（normalize=0，否则人声白掉 6dB）
+  [PASS] 音乐被压到背景垫底音量
+  [PASS] 人声保持原音量
+  [PASS] 每轨统一为 44100 立体声（避免声道不一致而报错）
+  [PASS] 响度归一已接上
+  [PASS] 淡入淡出已接上
+  [PASS] 音轨补齐到整片长度（音轨短于画面会截断画面）
+  [PASS] 音乐轨循环播放（配乐比解说短是常态）
+  [PASS] 输出被限定为画面时长
+  [PASS] 输出映射到混音 pad
+  [PASS] 单轨不套 amix
+  [PASS] 单轨仍过响度归一
+  [PASS] 淡入淡出不超过半片长
+  [PASS] 空轨道列表应报错
+  [PASS] 音乐角色默认 song（MV）
+  [PASS] role=bgm 时 is_bgm 为真
+  [PASS] role=song 时 is_bgm 为假
+  [PASS] 没给音乐时 is_bgm 为假
+  [PASS] role 进得了摘要
+  [PASS] 音轨标注：配音与音乐都说明
+  [PASS] 小结模式行标出 MV
+  [PASS] 小结模式行标出配乐（人声+音乐）
+  [PASS] 纯解说短片不误标 MV/配乐
+  [PASS] live 标记保留
+
+[7] 节拍（BPM/首拍估计 + 切点吸附）
+  [PASS] 空网格 ok 为假
+  [PASS] 无网格时 nearest 原样返回
+  [PASS] bpm<=0 的手工网格等于空网格
+  [PASS] 手工网格来源标为 manual
+  [PASS] 拍间隔 = 60/BPM
+  [PASS] 拍点数正确（0.25 起 / 0.5 间隔 / 到 2.0）
+  [PASS] 先验在 120BPM 处最大
+  [PASS] 先验对 0 不炸
+  [PASS] 120BPM 估计准确（实测 120.00）
+  [PASS] 120BPM 首拍相位正确
+  [PASS] 120BPM 置信度够用
+  [PASS] 160BPM 估计准确（实测 160.00）
+  [PASS] 160BPM 首拍相位正确
+  [PASS] 160BPM 置信度够用
+  [PASS] 无节拍的纯音不产出节拍网格
+  [PASS] 偏离拍点的切点被吸附到拍上
+  [PASS] 吸附后总时长不变
+  [PASS] 离拍点太远时不硬吸（否则某一镜会被拉得离谱）
+  [PASS] 吸附不会把镜头压到下限以下
+  [PASS] 无拍点时原样返回
+  [PASS] 单镜无需吸附
+  [PASS] 按拍切镜：总时长仍严格等于目标
+  [PASS] 按拍切镜：每镜仍不低于下限
+  [PASS] 按拍切镜：中间切点全落在拍点上
+  [PASS] 不给拍点时不改变原有分配（回归）
+
+[8] 歌词解析与上屏
+  [PASS] LRC 解析出 offset 标签（+250ms）
+  [PASS] LRC 元信息标签被忽略
+  [PASS] 同一行多个时间戳被展开成多条
+  [PASS] offset 语义：正值把歌词整体提前
+  [PASS] 每行都拿到正的区间
+  [PASS] 行区间首尾相接（前一行结束 = 后一行开始）
+  [PASS] 末行补到整首末尾
+  [PASS] 重复的副歌出现两次
+  [PASS] plain_lines 去掉时间戳与元信息
+  [PASS] plain_lines 跳过制作人员名单
+  [PASS] 纯文本按字数加权：长句时间更长
+  [PASS] 纯文本铺满整首
+  [PASS] 无时长时纯文本无法铺满（返回空而不是瞎猜）
+  [PASS] 纯文本也能吸到拍上
+  [PASS] 空歌词返回空
+  [PASS] 没有 caption 时用解说词（纯一句话模式）
+  [PASS] 有 caption 时优先用歌词
+  [PASS] caption 进得了分镜契约
+  [PASS] dict 形式也能取（代码绘制后端拿到的是 dict）
+  [PASS] 歌词被分配到镜头
+  [PASS] 每个镜头都有上屏文字
+  [PASS] 歌词 SRT 用歌词自己的时间轴
+  [PASS] 歌词 SRT 条数等于歌词行数
+  [PASS] 歌词 SRT 带 BOM（Windows 播放器兼容）
+
+[11] 画幅无关性（竖屏 / 方形）
+  [PASS] 画幅表与 image_render.RESOLUTIONS 一致
+  [PASS] 未知/空画幅回落 16:9
+  [PASS] 9:16 是竖屏（宽 < 高）
+  [PASS] config.js 下发画幅宽高
+  [PASS] config.js 仍含 duration/bpm（老字段没被挤掉）
+  [PASS] studio 的输出画布尺寸跟随画幅
+  [PASS] studio 的 CSS aspect-ratio 跟随画幅
+  [PASS] 横屏时画布仍是 1920x1080（回归）
+  [PASS] 相机中心是归一化比例（0-1）
+  [PASS] 相机比例与画幅无关（同一机位横竖屏同值）
+  [PASS] 场景注入单位换算 U（按短边 1080 基准）
+  [PASS] 绝对像素尺寸乘 U：const base = (34 + 7 * hash(idx * 5)) * U
+  [PASS] 绝对像素尺寸乘 U：const u = 30 * lerp(0.70, 1.45, fk) * U
+  [PASS] 绝对像素尺寸乘 U：groundY + 12 * U
+  [PASS] 绝对像素尺寸乘 U：* 6 * U
+  [PASS] 相机中心用 W/H 全局而不是写死像素
+  [PASS] 场景里不再出现写死的相机中心 960.0 / 540.0
+  [PASS] core.js 从 PROJECT 读画幅（不再是写死 1920×1080）
+  [PASS] karaoke.js 字条基线由 H 算（代码里不再写死 1024）
+  [PASS] karaoke.js 水平中心由 W 算（代码里不再写死 960）
+  [PASS] karaoke.js 长句会缩字号（竖屏 W 更窄）
+  [PASS] clean_frames 清掉帧并报出释放量
+  [PASS] clean_frames 对不存在的目录不炸
+
+[13] 生成的 JS 语法（node --check）
+  [PASS] 生成的场景 JS 语法正确（node --check）
+  [PASS] 生成的 lyrics.js 语法正确
+
+[12] 长片稳定性（超时与空闲判定）
+  [PASS] 短片超时有下限（不会因为帧少而过紧）
+  [PASS] 长片超时按帧数放大（3 分钟片不再被 1800s 杀在半路）
+  [PASS] 超时随帧数单调增长
+  [PASS] 空闲超时能杀掉卡死的渲染进程（不再无声挂死）
+  [PASS] 正常输出的进程不会被误杀
+
+[4b] 解说词节奏（字数/秒）
+  [PASS] 切分后镜头数一致
+  [PASS] 每镜字数不超上限
+  [PASS] 切分不丢词
+  [PASS] 切分不产生空镜
+
+[5] ComfyUI 工作流与 provider
+  [PASS] ComfyUI 工作流模板存在
+  [PASS] 模板为合法 JSON 且非空
+  [PASS] 管线可加载并改写模板
+  [PASS] 竖屏分辨率改写正确
+  [PASS] 种子注入正确
+  [PASS] 正向提示词被镜头提示词覆盖
+  [PASS] 负向提示词未被覆盖
+  [PASS] 顶层说明字段已剥离
+  [PASS] 节点内说明字段已剥离
+  [PASS] inputs 内说明字段已剥离
+  [PASS] 服务未启动时不可用
+  [PASS] 模板状态独立可见
+  [PASS] 模板缺失时不可用
+  [PASS] 缺模板原因明确
+  [PASS] 出图尺寸 16:9 钳制生效
+  [PASS] 出图尺寸 9:16 钳制生效
+  [PASS] 出图尺寸 1:1 钳制生效
+  [PASS] UI 导出格式被明确拒绝
+
+[6] 配置优先级与停止信号
+  [PASS] 显式空值覆盖环境变量
+  [PASS] .env 值优先于环境变量
+  [PASS] 未配置时回退环境变量
+
+[6b] 随包资源定位
+  [PASS] workflows 目录可定位
+  [PASS] workflows 内含 txt2img.json
+  [PASS] prompts 目录可定位
+  [PASS] prompts 内含 prompts.yaml
+  [PASS] 未请求停止时放行
+  [PASS] 放行时不写日志
+  [PASS] 收到停止信号后返回 True
+  [PASS] 收到停止信号后置位 stopped
+  [PASS] 停止会写日志与人工关注项
+  [PASS] 再次调用直接短路
+  [PASS] 短路不重复写日志
+  [PASS] 进度取值落在 0-1
+  [PASS] 进度阶段名非空
+
+[14] 前端主题令牌（深浅两套必须对齐）
+  [PASS] 前端样式表存在
+  [PASS] 浅色主题有一整套颜色令牌
+  [PASS] 深色主题覆盖了浅色的每一个颜色令牌
+  [PASS] 浅色主题的正文是深墨色
+  [PASS] 深色主题的正文是亮色
+  [PASS] 两套主题的凹陷区取值不同
+  [PASS] 主色与主色底衬都已定义
+  [PASS] 主题切换真的写到 html[data-theme]（样式表靠它匹配）
+  [PASS] FFmpeg 版本探测有明确结论
+  [PASS] FFmpeg 写盘探针有明确结论
+  [PASS] 写盘探针结论与实际一致（正常环境应产出文件）
+  [PASS] 端点规整（漏 /v1）
+  [PASS] 端点规整（带 /v1）
+  [PASS] 端点规整（带尾斜杠）
+  [PASS] 端点规整（填全路径）
+  [PASS] 空端点应报错
+  [PASS] 缺协议的端点应报错
+  [PASS] 401 提示指向密钥
+  [PASS] 404 提示指向端点与模型
+  [PASS] 402 提示余额
+  [PASS] 429 提示限流
+  [PASS] 5xx 提示服务端故障
+  [PASS] 简报仍能产出（降级兜底）
+  [PASS] 解析失败被记录
+  [PASS] 残缺 JSON 降级到离线剧本（不抛错）
+  [PASS] 缺字段被记录
+  [PASS] 返回数组被识别为不合契约
+  [PASS] 体检返回布尔值
+  [PASS] 体检带可读说明
+  [PASS] 生成场景 JS 有实际内容
+  [PASS] 镜头 1 有绘制函数
+  [PASS] 镜头 2 有绘制函数
+  [PASS] 镜头 3 有绘制函数
+  [PASS] 镜头时间表按累计时长排布
+  [PASS] 场景不含跨帧可变状态（每帧是 t 的纯函数）
+  [PASS] config.js 含 PROJECT
+  [PASS] 场景 JS 不重复定义 PROJECT
+  [PASS] studio 加载生成的场景
+  [PASS] studio 不加载 demo 场景
+  [PASS] studio 支持自定义 p5 加载前缀（打包形态）
+  [PASS] 模块前缀用正斜杠（file 路径要求）
+  [PASS] 存在 node_modules 联接兜底函数
+  [PASS] 存在模块前缀解析函数
+  [PASS] 工作副本会补写权限
+  [PASS] 只读文件被补上写权限
+  [PASS] 模块前缀默认走相对路径（源码形态）
+  [PASS] 景别映射正确（特写 > 中景 > 全景）
+  [PASS] 未知机位有安全兜底
+  [PASS] 字幕被压到可显示长度
+  [PASS] 字幕不以标点残尾结尾
+  [PASS] 空解说词返回空字幕
+  [PASS] 短句原样保留
+  [PASS] 无配音时仍输出音轨（静音兜底）
+  [PASS] 无配音时音频流被映射
+  [PASS] 视频编码参数保持
+  [PASS] 成片时长以视频为准（-shortest）
+  [PASS] 有配音时音频作为第二路输入
+  [PASS] 有配音时用 aac 编码音轨
+  [PASS] 配音文件不存在时回落静音轨，而不是无声失败
+  [PASS] 同一支片签名稳定
+  [PASS] 换分镜后签名改变
+  [PASS] 换帧率后签名改变
+  [PASS] 无签名时清理旧帧（首次渲染不吃旧帧）
+  [PASS] 签名一致时保留帧（断点续渲不受影响）
+  [PASS] 换了片子则清理旧帧（不再串片）
+  [PASS] 签名文件名不会与 f*.jpg 混淆
+  [PASS] config.js 写入真实 bpm
+  [PASS] config.js 写入真实 offset（此前恒为 0）
+  [PASS] 无节拍时回落默认 BPM（引擎 bpm=0 会算出 Infinity）
+  [PASS] lyrics.js 注入 window.KARAOKE_LY
+  [PASS] lyrics.js 用引擎要的 [start, end, 词] 格式
+  [PASS] 空歌词也生成合法 JS（不是 'undefined'）
+  [PASS] 坏行被跳过（不产生 NaN）
+  [PASS] karaoke 模式加载 karaoke.js
+  [PASS] karaoke 模式加载生成的 lyrics.js
+  [PASS] lyrics.js 先于 karaoke.js 加载
+  [PASS] karaoke.js 晚于 core.js 加载
+  [PASS] 不开 karaoke 时页面与以前完全一致
+  [PASS] captions=False 时不画场景自带字幕
+  [PASS] captions=True（默认）仍画场景字幕
+  [PASS] karaoke.js 读 window.KARAOKE_LY（本项目对 vendor 的唯一改动）
+  [PASS] 只换歌词也会让帧缓存失效
+  [PASS] extra 不参与时签名与以前一致
+  [PASS] 渲染并发不随核数放大
+  [PASS] 渲染并发至少有 2（单 worker 浪费）
+  [PASS] 渲染失败会重试（帧缓存让重试等于续渲，不从头来）
+  [PASS] 重试有可读提示
+  [PASS] 重试到上限后如实返回失败（不假装成功）
+  [PASS] apply_painted 无分镜时优雅跳过并写 notes
+  [PASS] apply_painted 渲染失败时保留原成片（不抛异常、不改 compose）
+  [PASS] apply_painted 失败写进 notes 供人工关注
+  [PASS] subtitle_plan：none 不烧字
+  [PASS] subtitle_plan：sidecar 画面也不烧字（字幕交给 SRT）
+  [PASS] subtitle_plan：burn + 歌词 → 逐字卡拉OK，不再画整句字幕
+  [PASS] subtitle_plan：burn 无歌词 → 整句字幕
+  [PASS] subtitle_plan：人工轨优先于歌词
+  [PASS] subtitle_plan：人工轨给空列表 = 明确不要字幕（连镜头字幕也不烧）
+  [PASS] apply_painted 把字幕模式透传给绘制后端
+  [PASS] apply_painted 把字幕偏移透传给绘制后端
+  [PASS] apply_painted 把人工字幕轨透传给绘制后端
+  [PASS] 场景 JS 下发字幕偏移常量
+  [PASS] 整句字幕按偏移后的本地时间判断
+  [PASS] 关掉字幕时镜头不带字幕文案
+  [PASS] 逐字歌词同样按偏移平移（否则画面与 SRT 差一个固定量）
+  [PASS] 平移到片头之前的歌词行被丢掉
+  [PASS] 字幕偏移变化会让帧缓存失效（不复用上一版画面）
+  [PASS] 字幕模式切换会让帧缓存失效
+  [PASS] 人工字幕轨变化会让帧缓存失效
+  [PASS] 空镜头列表返回失败而不是异常
+  [PASS] 失败时给出原因
+  [PASS] 失败时如实上报无音轨
+
+[9] 启动延迟与水彩画质档位
+  [PASS] ComfyUI 探测超时 <1秒（否则每次白等整个超时）
+  [PASS] 探测不再用 8 秒超时
+  [PASS] 首次探测在 1.5 秒内
+  [PASS] 后续走缓存（3 次合计 <0.1 秒）
+  [PASS] 缓存返回副本（改它不污染内部状态）
+  [PASS] build_provider_chain 复用缓存（<0.2秒）
+  [PASS] provider 链至少含 offline 兜底
+  [PASS] 启动时体检放到后台线程
+  [PASS] 启动时不再同步调 on_env(check_env(...))
+  [PASS] 三档预设齐全
+  [PASS] fast 档关闭纸纹与渗色
+  [PASS] high 档保持出厂画质
+  [PASS] 未知档位回落默认而非崩溃
+  [PASS] studio 在 core.js 之前加载 quality.js
+  [PASS] 画质纳入帧缓存签名
+  [PASS] quality.js 在写 studio.html 之前落盘
+  [PASS] core.js 读 window.QUALITY
+  [PASS] core.js 把系数作用到 fillTexture
+
+[8] 打包规则（分发包体积与可用性）
+  [PASS] 随包数据里有前端产物
+  [PASS] 代码绘制模板是整套随包（不是只带 src）
+  [PASS] 模板里确实有 render.mjs（打包后要能渲染）
+  [PASS] 模板里确实有 studio.html（打包后要能渲染）
+  [PASS] 模板里确实有 package.json（打包后要能渲染）
+  [PASS] 模板里确实有 node_modules（打包后要能渲染）
+  [PASS] 排除渲染产物 out/
+  [PASS] 排除上游仓库残留 .git/
+  [PASS] node_modules 不能排除（排掉就要用户自己 npm install）
+  [PASS] 排除发生在复制阶段（ignore_patterns 带上 VENDOR_EXCLUDE）
+  [PASS] 打包入口是 desktop.py（不是旧 Tk 入口）
+  [PASS] 旧 Tk 前端已不在仓库里
+  [PASS] hiddenimports 带 python_multipart（否则打包版上传音轨 500）
+  [PASS] hiddenimports 带 python_multipart.multipart（解析器本体）
+
+[5] 离线创意引擎端到端（不落盘视频）
+  [PASS] 简报：时长为 15
+  [PASS] 简报：风格已推断
+  [PASS] 剧本：解说词非空
+  [PASS] 剧本：起承转合四段
+  [PASS] 剧本：片名不含时长噪声
+  [PASS] 分镜：镜头数 ≥ 3
+  [PASS] 分镜：时长累加 = 简报时长
+  [PASS] 分镜：每镜都有英文图像提示词
+  [PASS] 分镜：每镜都有验收标准且 ≤ 24 字
+  [PASS] 分镜：提示词包含质量词
+  [PASS] 分镜：运动提示词为英文且不含换场词
+  [PASS] 占位帧已渲染且体积正常
+  [PASS] 占位帧可复现（同输入同哈希）
+
+[9] 按场局部重拆（C 期）
+  [PASS] 重拆后镜数 4 → 5
+  [PASS] 重拆不改全片总时长
+  [PASS] 只有被点名的场变了
+  [PASS] 后面的场被顺移到镜 5
+  [PASS] 顺移的镜头内容没被改
+  [PASS] id_map 保住没动的镜 1
+  [PASS] id_map 把镜 4 映射到 5
+  [PASS] 被换掉的镜 2/3 没有映射
+  [PASS] 新镜头不产生伪映射
+  [PASS] 起点首尾相接
+  [PASS] 末镜收在总时长上
+  [PASS] time_range 能读出这一场的时长
+  [PASS] 读不出 time_range 时返回 0
+  [PASS] 场次名不存在要报错
+  [PASS] 长句被切成小句后能装进镜头
+  [PASS] 没有退化成兜底句
+
+[16] MV 入口（音轨上传与时长权威）
+  [PASS] 合法 token 通过正则
+  [PASS] token '../yiyan.db' 被拒
+  [PASS] token '..\\x.mp3' 被拒
+  [PASS] token 'C:\\Windows\\win.ini' 被拒
+  [PASS] token 'a/b.mp3' 被拒
+  [PASS] token '3f2a9c1d8e4b7a06.mp3.exe' 被拒
+  [PASS] token '' 被拒
+  [PASS] 不存在的音轨 被拒
+  [PASS] 穿越 token 被拒
+  [PASS] RunRequest 有全部音乐字段
+  [PASS] 默认没有音轨（解说模式）
+  [PASS] music_role 只认 song / bgm
+  [PASS] 没有音轨时不改时长、不写 meta
+  [PASS] 填了歌词却没音轨要拒绝
+  [PASS] 服务端不把 4 秒 3 镜判成越界
+  [PASS] 管线侧也不把 4 秒 3 镜判成越界
+  [PASS] 手改到 1.0 秒仍被判越界
+  [PASS] 12 秒仍被判越界
+  [PASS] 前端有上传接口
+  [PASS] 前端把 mode 映射成 music_role
+  [PASS] 创作台有模式切换
+  [PASS] MV 模式下时长是只读的
+  [PASS] 拆解页显示音轨徽章
+
+[17] 单镜重拍（只拍一镜，其余复用）
+  [PASS] RunOptions 有 only_shot，默认 0（整片拍摄）
+  [PASS] render_from_plan 收 only_shot
+  [PASS] _sync_starts 不抛异常
+  [PASS] 镜长一个都没被改
+  [PASS] start 按累加重排
+  [PASS] 总时长按累加回写
+  [PASS] 镜号不存在时报错
+  [PASS] 代码绘制模式拒绝单镜重拍
+  [PASS] 有单镜重拍接口
+  [PASS] 前端有 renderShot
+  [PASS] useRun 有 startShot
+  [PASS] 拆解页有「重拍这一镜」按钮
+  [PASS] App 把 onReshoot 接上了
+
+[17b] 复用闭环（拍摄 → 只重合成 → 单镜重拍）
+  [PASS] 整片拍摄产出成片
+  [PASS] 拍摄后每镜都留下选中图摘要
+  [PASS] 拍摄后每镜都留下片段指纹
+  [PASS] 改时间轴后只重合成成功
+  [PASS] 重合成按新时长出片
+  [PASS] 重合成不抹掉拍摄证据
+  [PASS] 单镜重拍复用其余镜头片段
+  [PASS] 画面改过时拒绝只重合成
+
+[17c] 母版原子落盘与字幕模式收尾
+  [PASS] 首次合成产出母版
+  [PASS] 烧录模式产出 SRT
+  [PASS] 合成结束不留临时母版
+  [PASS] 分镜证据落盘且不留临时文件
+  [PASS] 合成失败如实抛出
+  [PASS] 失败后旧母版字节完全不变（历史详情与导出仍可播）
+  [PASS] 失败后清掉半截临时文件（不会被当成成片）
+  [PASS] 成功重合成替换母版
+  [PASS] 重合成后不留临时母版
+  [PASS] 不要字幕时删掉上一版 SRT（历史页不再显示有字幕）
+  [PASS] 不要字幕时结果里字幕路径为空
+  [PASS] 外挂字幕模式仍产出 SRT
+  [PASS] 绘制版编码先写临时文件再原子替换
+  [PASS] 绘制版编码失败时清掉临时文件
+  [PASS] compose 有 fit_clip
+  [PASS] fit_clip 短片段用 tpad 冻结末帧
+  [PASS] fit_clip 长片段裁尾（-t 目标时长）
+  [PASS] fit_clip 与 make_clip 的编码器一致（"-c:v", "libx264"）
+  [PASS] fit_clip 与 make_clip 的preset一致（"-preset", "medium"）
+  [PASS] fit_clip 与 make_clip 的crf一致（"-crf", "20"）
+  [PASS] fit_clip 与 make_clip 的像素格式一致（"-pix_fmt", "yuv420p"）
+  [PASS] fit_clip 与 make_clip 的帧率一致（"-r", str(FPS)）
+  [PASS] fit_clip 长度差在一帧内时原样返回（不白重编码）
+  [PASS] RunOptions 有 recompose 且默认关闭
+  [PASS] Pipeline 有 recompose_from_plan
+  [PASS] Pipeline 有 _recompose
+  [PASS] recompose_from_plan 走 _sync_starts（不重算镜长）
+  [PASS] recompose_from_plan 不调 _rebuild_timeline
+  [PASS] _recompose 用 fit_clip 对齐片段
+  [PASS] _recompose 把对齐结果写到 clips_fit（不覆盖源片段）
+  [PASS] _recompose 按 board.shots 顺序收集片段（重排即改列表次序）
+  [PASS] 重合成复用配音（reuse_voice=True）
+  [PASS] _voiceover 支持 reuse
+  [PASS] 复用配音仍重新 fit（镜长变了要重对齐）
+  [PASS] 有 POST /plan/{run_id}/recompose
+  [PASS] 有 POST /plan/{run_id}/shots/reorder
+  [PASS] 代码绘制模式拒绝只重合成（整段视频没有逐镜片段）
+  [PASS] ReorderRequest 拒绝空顺序
+  [PASS] 重排拒绝非完整置换（防悄悄少镜头）
+  [PASS] 重排后顺序真的是 3→1→2
+  [PASS] 重排后 start 按新顺序重算
+  [PASS] 重排不改镜号、不改总时长
+  [PASS] 没拍过就拒绝只重合成（没有片段可重拼）
+  [PASS] 片段缺失时点名缺哪几镜（不是起任务后才失败）
+  [PASS] 前端有 recomposePlan
+  [PASS] 前端有 reorderShots
+  [PASS] useRun 有 startRecompose
+  [PASS] 拆解页有「只重合成」按钮
+  [PASS] 拆解页有上移/下移
+  [PASS] 拆解页把 onRecompose 传下去了
+  [PASS] App 把 onRecompose 接上了
+
+[18] 权限归属、版本冲突与渲染继承
+  [PASS] 归属键写成 u:<id>
+  [PASS] 主人能看
+  [PASS] 其他账号看不到
+  [PASS] 访客看不到
+  [PASS] 匿名看不到
+  [PASS] 无归属旧项目仍按公共处理
+  [PASS] 归属不能被后来的创建覆盖
+  [PASS] 合法访客凭据解析成 g:<id>
+  [PASS] 非法访客凭据被拒
+  [PASS] 归属查询故障时拒绝访问
+  [PASS] 归属写入故障可见
+  [PASS] 并发编辑不报错
+  [PASS] 两个镜头的修改都保留
+  [PASS] 版本号按修改次数递增
+  [PASS] 过期版本提交被 409 挡住
+  [PASS] 拍摄入口返回版本号
+  [PASS] 空请求不被默认值改成真实模型
+  [PASS] 代码绘制配置被继承
+  [PASS] 拍的是冻结快照而不是活动目录
+  [PASS] 快照带 run_id，成片仍落在原项目
+  [PASS] 快照内含分镜与配置
+  [PASS] 显式覆盖生效
+  [PASS] 显式覆盖回写项目配置
+  [PASS] 未列入白名单的键被拒
+  [PASS] 配置值按类型校验
+  [PASS] 合法配置写入并返回状态
+  [PASS] 写入没有遗留临时文件
+  [PASS] 显式清除会移除整行
+  [PASS] 清除不影响其他已保存项
+  [PASS] 同一键不能同时替换和清除
+  [PASS] 配置写入依赖登录
+  [PASS] 任务在生成前就登记归属（失败/取消也不会无主）
+  [PASS] 任务对创建者可读
+  [PASS] 任务对其他访客不可读
+  [PASS] 任务对匿名不可读
+  [PASS] 任务快照带渲染配置且不泄露归属
+  [PASS] 越权读取任务被 404 挡住
+  [PASS] 任务详情依赖主体解析
+  [PASS] 同秒同主题得到不同 ID
+  [PASS] 两个目录都真实存在
+  [PASS] 拆解页有保存队列与版本
+  [PASS] 拍摄前等待保存落地
+  [PASS] 拆解页显示实际拍摄配置
+  [PASS] 前端生成访客凭据
+  [PASS] 事件流带认证头
+
+[19] 质检依据、音轨资产与事件流恢复
+  [PASS] 不存在的图片技术检查失败
+  [PASS] 正常图片通过技术检查
+  [PASS] 技术检查产出内容哈希
+  [PASS] 纯黑图片被判技术检查失败
+  [PASS] 缺图时标注 technical_failed
+  [PASS] 离线质检标注为模拟评审
+  [PASS] 描述里带真实技术指标
+  [PASS] 模拟评审会写入项目提示
+  [PASS] 技术失败直接判不合格
+  [PASS] 模拟评审结果带规则版本
+  [PASS] 镜头对象保存评审依据
+  [PASS] 技术检查是决策层之外的硬闸门
+  [PASS] 上传已清理仍能拍摄（用项目内音轨）
+  [PASS] 没有回落去解析上传 token
+  [PASS] 歌词/节拍/角色完整保留
+  [PASS] 项目音轨丢失时才要求重新上传
+  [PASS] SSE 归一 CRLF
+  [PASS] SSE 返回终态标记
+  [PASS] SSE 收到终态主动释放连接
+  [PASS] EOF 后查询任务快照
+  [PASS] 任务不存在时停止重连
+  [PASS] 恢复连接显示独立状态
+
+[20] 配置清除、路由容错与上传线程化
+  [PASS] 设置页有显式清除动作
+  [PASS] 设置页区分保留与替换
+  [PASS] 保存接口区分 values 与 delete
+  [PASS] 路由使用安全解码
+  [PASS] 非法链接有返回入口
+  [PASS] 页面级错误边界
+  [PASS] 上传探测在线程池执行
+  [PASS] 并发探测有上限
+  [PASS] 失败仍清理 .part
+  [PASS] 收尾生成内容哈希 token
+  [PASS] 旁注保留原始文件名
+  [PASS] 临时文件已改名
+  [PASS] 时长/容器格式一并返回
+
+[21] 草稿项目库与版本恢复
+  [PASS] 项目库列出草稿
+  [PASS] 项目库列出已拍
+  [PASS] 项目卡片带标题/镜数/版本
+  [PASS] 草稿筛选只返回草稿
+  [PASS] 已拍筛选排除草稿
+  [PASS] 初始版本可列出
+  [PASS] 编辑后新增版本
+  [PASS] 恢复把分镜改回旧版本
+  [PASS] 恢复生成新版本号而不是回退计数
+  [PASS] 恢复保留音轨与拍摄配置
+  [PASS] 恢复后标记为未拍摄
+  [PASS] 恢复接口返回完整拆解
+  [PASS] 不存在的版本返回 404
+  [PASS] 有项目库接口
+  [PASS] 有版本与恢复接口
+  [PASS] 前端有草稿项目库页面
+  [PASS] 导航有项目入口
+  [PASS] 拆解页有版本恢复入口
+  [PASS] 创作表单自动保存草稿
+
+[22] 任务中心与重启恢复
+  [PASS] 任务创建即落库
+  [PASS] 任务记录带渲染配置
+  [PASS] run_id 回填到任务记录
+  [PASS] 完成后状态与成片落库
+  [PASS] 结果体可回读
+  [PASS] 任务按主体过滤
+  [PASS] 其他主体看不到任务
+  [PASS] 列表摘要不含结果体与本地路径
+  [PASS] 重启后快照含状态与成片标记
+  [PASS] 快照不泄露归属
+  [PASS] 重启后按 job_id 仍可查
+  [PASS] 其他主体按 id 查不到
+  [PASS] 任务中心列表按主体过滤
+  [PASS] 匿名任务列表为空
+  [PASS] 重启后事件流直接给出终态
+  [PASS] 重启把运行中任务标为中断
+  [PASS] 中断任务给出原因
+  [PASS] 启动即做任务收尾
+  [PASS] 任务终态写入任务表
+  [PASS] 拍摄任务记录种类
+  [PASS] 前端有任务中心
+  [PASS] 导航有任务入口
+  [PASS] 任务可接回进度
+
+[23] 质检证据与人工复核
+  [PASS] 质检面板列出逐镜证据
+  [PASS] 技术检查失败单独标出
+  [PASS] 汇总区分模拟评审与技术失败
+  [PASS] 初始全部待复核
+  [PASS] 人工通过写入并返回新汇总
+  [PASS] 人工备注保留
+  [PASS] 复核说明不改变成片
+  [PASS] 画面哈希不符拒绝写入
+  [PASS] 非法结论被拒
+  [PASS] 不存在的镜头返回 404
+  [PASS] 撤销人工结论
+  [PASS] 复核文件原子写无残留
+  [PASS] 有主运行仅主人可见
+  [PASS] 他人看不到质检面板
+  [PASS] 他人写不了人工结论
+  [PASS] 有质检面板接口
+  [PASS] 分镜模型保存技术证据
+  [PASS] 渲染时写入技术证据
+  [PASS] 前端有质检接口类型
+  [PASS] 成片详情有质检面板
+
+[24] 低清预览与独立产物
+  [PASS] 16:9 预览尺寸减半
+  [PASS] 竖屏预览尺寸减半
+  [PASS] 预览尺寸保持偶数
+  [PASS] 占位帧可按半尺寸绘制
+  [PASS] 整数倍率行为不变
+  [PASS] 预览成片写独立目录
+  [PASS] 预览工作目录独立
+  [PASS] 预览成片尺寸减半
+  [PASS] 运动后端也按预览尺寸
+  [PASS] 预览不再放大工作画布
+  [PASS] 预览任务带 preview 标志
+  [PASS] 预览不把项目标记为已拍
+  [PASS] 预览记录时间与版本
+  [PASS] 预览不写正式拍摄配置
+  [PASS] 单镜预览任务可启动
+  [PASS] 单镜预览仍不标已拍
+  [PASS] 记录最近单镜预览
+  [PASS] 拆解接口返回已有片段
+  [PASS] 正式拍摄仍走原路径
+  [PASS] 有整片与单镜预览接口
+  [PASS] 绘制引擎支持独立帧目录
+  [PASS] 绘制帧目录可传入
+  [PASS] 前端有整片与单镜预览接口
+  [PASS] 拆解页有整片预览与单镜预览入口
+  [PASS] 拆解页标记片段缓存
+  [PASS] 预览复用事件流
+  [PASS] 结果页区分整片与单镜预览
+  [PASS] 单镜预览产出这一镜片段
+  [PASS] 单镜预览片段为半分辨率
+  [PASS] 单镜预览不产出正式成片
+  [PASS] 单镜预览不写正式片段缓存
+  [PASS] 单镜预览片段落在 preview 命名空间
+
+[25] 混音电平与字幕校准
+  [PASS] 字幕整体延后
+  [PASS] 提前时起点夹到 0
+  [PASS] 提前后不产生负时间
+  [PASS] 整体移出成片后不写坏字幕
+  [PASS] 歌词提前时丢弃已移出片头的整句
+  [PASS] 歌词延后超出成片时不写坏字幕
+  [PASS] 拍摄继承项目保存的混音设置
+  [PASS] 显式设置覆盖并保存
+  [PASS] 未覆盖的字段沿用保存值
+  [PASS] 快照冻结混音设置
+  [PASS] 预览可以试听电平但不改项目设置
+  [PASS] 混音电平越界被拒
+  [PASS] 合成使用项目电平
+  [PASS] 重合成把设置传给合成
+  [PASS] 字幕写入支持整体偏移
+  [PASS] 前端有混音设置类型
+  [PASS] 拆解页有音轨字幕面板
+
+[26] 字幕轨编辑与导出
+  [PASS] SRT 解析保留时间与文本
+  [PASS] 带 BOM 的 SRT 不把序号当正文
+  [PASS] LRC 导出按启动时间标记
+  [PASS] 人工字幕应用偏移并夹到片尾
+  [PASS] 字幕写盘再读回不带序号与 BOM
+  [PASS] 默认读上次成片字幕
+  [PASS] 读取时扣除整体偏移
+  [PASS] 保存字幕轨并递增版本
+  [PASS] 来源标记为人工保存
+  [PASS] 旧版本号保存被 409 挡住
+  [PASS] 重叠字幕被拒
+  [PASS] 超出成片时长被拒
+  [PASS] 零长度字幕被拒
+  [PASS] 拍摄带上人工字幕轨
+  [PASS] 快照冻结人工字幕
+  [PASS] 空字幕轨表达为明确不要字幕
+  [PASS] 恢复自动生成移除人工字幕
+  [PASS] 有字幕轨接口
+  [PASS] 前端有字幕轨接口与 LRC 导出
+  [PASS] 拆解页有字幕轨编辑
+  [PASS] 成片详情可下载 SRT/LRC
+
+[27] 角色参考图与视觉锁定
+  [PASS] 出图提示词拼上引用的视觉锁定
+  [PASS] 注入不改写原稿
+  [PASS] 锁定去重且记录引用
+  [PASS] 没引用任何角色时原样返回
+  [PASS] 离线后端声明不支持参考图
+  [PASS] provider 状态带参考图能力字段
+  [PASS] 当前所有后端都不支持参考图
+  [PASS] 环境体检明确显示参考图能力
+  [PASS] 出图时应用角色锁定
+  [PASS] 参考图存档并递增版本
+  [PASS] 参考图按内容哈希落盘
+  [PASS] 角色卡记录被标记为用户改过
+  [PASS] 参考图接口返回文件
+  [PASS] 拆解接口带上参考图信息
+  [PASS] 不存在的角色被拒
+  [PASS] 非图片文件被拒
+  [PASS] 超大参考图被 413 挡住
+  [PASS] 旧版本号上传被 409 挡住
+  [PASS] 角色卡保存视觉锁定
+  [PASS] 改锁定会列出引用镜头并说明不自动更新
+  [PASS] 重拆保留参考图
+  [PASS] 重拆保留用户手改的锁定
+  [PASS] 未手改的角色跟随模型更新
+  [PASS] 移除参考图后角色卡清空
+  [PASS] 旧版本引用的图片不被立即删除
+  [PASS] 没有参考图时读取返回 404
+  [PASS] 有角色卡与参考图接口
+  [PASS] 前端有角色卡接口与参考图地址
+  [PASS] 拆解页有角色卡与引用标记
+
+[28] 音轨波形与峰值缓存
+  [PASS] 峰值桶数正确
+  [PASS] 静音段接近 0、有声段接近 1
+  [PASS] 时长按采样推算
+  [PASS] 第二次读缓存
+  [PASS] 桶数夹在上下限
+  [PASS] 波形接口返回峰值与音轨信息
+  [PASS] 波形缓存落在项目 work 目录
+  [PASS] 首次接口调用未命中缓存
+  [PASS] 再次调用命中缓存
+  [PASS] 音轨变化后缓存失效
+  [PASS] 没有音轨时明确 404
+  [PASS] 单镜画面接口返回留存帧
+  [PASS] 没有留存画面时 404
+  [PASS] 有波形接口与单镜画面接口
+  [PASS] 前端有波形与单镜画面地址
+  [PASS] 拆解页绘制可拖动波形与字幕块
+  [PASS] 成片详情可叠安全区
+
+[29] 成片多规格导出
+  [PASS] 导出任务已启动
+  [PASS] 竖屏适配导出完成
+  [PASS] 导出文件是 1080x1920
+  [PASS] 导出保留原片时长
+  [PASS] 导出元数据落盘
+  [PASS] 重复导出命中缓存
+  [PASS] 导出列表包含缓存
+  [PASS] 原片变化后缓存失效并重导
+  [PASS] 失效后重新导出完成
+  [PASS] 方形裁切导出 1080x1080
+  [PASS] 原片已是目标画幅时拒绝
+  [PASS] 没有成片时拒绝导出
+  [PASS] 非法画幅被拒
+  [PASS] 导出文件可下载
+  [PASS] 有导出接口
+  [PASS] 前端有导出接口
+  [PASS] 成片详情有导出面板
+
+[30] 任务重试与取消释放子进程
+  [PASS] 重试按项目重建整片拍摄
+  [PASS] 重试恢复单镜重拍的镜号
+  [PASS] 重试恢复单镜预览
+  [PASS] 重试恢复只重合成
+  [PASS] 重试沿用任务记录里的拍摄配置
+  [PASS] 一句话成片明确拒绝重试
+  [PASS] 已完成任务不允许重试
+  [PASS] 别人的任务不能重试
+  [PASS] 项目不存在时明确报错
+  [PASS] 有任务重试接口
+  [PASS] 子进程可登记
+  [PASS] 登记计数正确
+  [PASS] 取消结束已登记进程
+  [PASS] 被取消的进程确实退出
+  [PASS] 取消后登记的进程立即结束
+  [PASS] 取消能中断正在编码的 FFmpeg
+  [PASS] 取消入口会释放子进程
+  [PASS] FFmpeg 执行会登记进程
+  [PASS] 导出不参与任务取消
+  [PASS] 停止提示说明会释放子进程
+  [PASS] 前端有重试接口
+  [PASS] 任务中心有重试入口
+  [PASS] 结果页说明停止后没有成片
+
+[31] 品牌模板与批量导出
+  [PASS] 品牌模板保存后启用
+  [PASS] 无拆解的旧项目读品牌不报 404
+  [PASS] 不存在的运行读品牌仍 404
+  [PASS] 无拆解的旧项目写品牌仍被拒
+  [PASS] 再次保存留出撤销档
+  [PASS] 品牌版本冲突被拒绝
+  [PASS] 撤销回到上一版内容
+  [PASS] logo 按内容寻址落盘
+  [PASS] 移除 logo 后配置清空
+  [PASS] 撤销能找回 logo 且文件还在
+  [PASS] 清除模板后不再启用
+  [PASS] 别人的项目不能改品牌
+  [PASS] 品牌指纹对等价配置稳定、内容不同则变化
+  [PASS] 批量导出自动去重
+  [PASS] 批量导出全部完成
+  [PASS] 品牌版分辨率正确
+  [PASS] 导出记录品牌版本与指纹
+  [PASS] 同品牌重复批量命中缓存
+  [PASS] 品牌变更让旧导出失效
+  [PASS] 同画幅但有品牌变换仍可导出
+  [PASS] 导出目标包含 16:9
+  [PASS] 16:9 原片叠品牌可导出
+  [PASS] 16:9 无品牌时整批跳过
+  [PASS] 预设 id 不污染标准缓存
+  [PASS] 预设清单包含平台档位
+  [PASS] 未知预设被拒绝
+  [PASS] 预设固定画幅不匹配时拒绝
+  [PASS] 预设产物缓存键区分预设
+  [PASS] 品牌与批量接口已注册
+  [PASS] 前端有品牌与批量接口
+  [PASS] 成片页有模板编辑与批量入口
+
+[32] 生成器目录与费用预算
+  [PASS] 台账去重、跳过坏行且不记零金额
+  [PASS] 云端视频未接入时估价为 0、不拦本地出片
+  [PASS] 配置了端点但适配器未接入仍不算可用
+  [PASS] 适配器可用后按单价估算
+  [PASS] 超预算任务在提交前拒绝
+  [PASS] 代码绘制不误伤预算闸D:\02_Competation\01_AIC\YiYanStudio-V3-完整源码\一言片场-V3\tests\test_pipeline.py:6265: DeprecationWarning: Image.Image.getdata is deprecated and will be removed in Pillow 14 (2027-10-15). Use get_flattened_data instead.
+  mean = sum(im.convert("L").getdata()) / (im.width * im.height)
+
+  [PASS] 低清预览不误伤预算闸
+  [PASS] 只重合成不误伤预算闸
+  [PASS] 预算内的任务正常放行
+  [PASS] 能力目录覆盖绘制/出图/视频/配音/文本
+  [PASS] 未接入的云端视频不显示就绪
+  [PASS] 能力测试写明只探测不生成收费样片
+  [PASS] 本地离线出图在目录中真实可用
+  [PASS] 费用台账只统计自己的运行
+  [PASS] 别人的费用不会串到当前账号
+  [PASS] 没有主体时不查台账
+  [PASS] 生成器与费用接口已注册
+  [PASS] 创建与拍摄入口都接预算闸
+  [PASS] 云端调用成功后才记费用
+  [PASS] 设置页有生成器与费用面板
+
+[33] 片段指纹与项目色板
+  [PASS] 同一输入的片段指纹稳定
+  [PASS] 文案变化让片段指纹失效
+  [PASS] 只改镜长/时间轴不变更片段指纹
+  [PASS] 换色板让片段指纹失效
+  [PASS] 换预览档位/安全区让指纹失效
+  [PASS] 没有片段时状态是 missing
+  [PASS] 旧片段没有指纹时状态是 unknown
+  [PASS] 写入指纹后状态是 current
+  [PASS] 输入变化后状态是 stale
+  [PASS] 色板只换配色，不换题材
+  [PASS] 不同色板真的产出不同画面
+  [PASS] 色板保存递增版本并写入渲染配置
+  [PASS] 拍摄时默认继承项目色板
+  [PASS] 拍摄请求可显式覆盖色板
+  [PASS] 色板保存遵循版本冲突
+  [PASS] 色板接口已注册
+  [PASS] 前后端都有色板入口
+  [PASS] 片段复用与过期拦截都在管线里
+
+[34] 真实视觉评审链路
+  [PASS] 视觉请求使用 VLM 模型名
+  [PASS] 视觉请求真的带上图片数据
+  [PASS] 视觉响应能取回内容
+  [PASS] VLM 成功时标记为真实视觉评审
+  [PASS] VLM 失败时明确降级为模拟评审
+
+[35] 品牌字体版本
+  [PASS] 品牌指纹随字体文件变化
+  [PASS] 字体指纹函数可读
+
+[36] 第二轮：归属、母版、证据、快照、缓存、字幕
+  [PASS] 归属失败向上抛并中止任务
+  [PASS] on_start 在 ctx.prepare 之前
+  [PASS] Engine 不再吞掉归属前置异常
+  [PASS] 创建任务归属失败返回 503
+  [PASS] 归属失败不留下空项目目录
+  [PASS] 任务预留阻止第二条请求
+  [PASS] 错误预留令牌不能创建任务
+  [PASS] 旧项目无 manifest 时回落到 output/final.mp4
+  [PASS] 发布母版后解析到绘制版
+  [PASS] 母版 manifest 记录任务与快照
+  [PASS] 母版必须位于项目目录内
+  [PASS] manifest 目标丢失时不偷偷回落到基础版
+  [PASS] 任务完成时发布当前母版
+  [PASS] 历史详情读取当前母版
+  [PASS] 本地视频使用已选生成图而不是重画占位背景
+  [PASS] 离线占位帧仍重画无字背景
+  [PASS] 选中候选完整绑定证据
+  [PASS] 复核接口返回 evidence_id 与候选列表
+  [PASS] 混合质检汇总按模式计数
+  [PASS] 同版本两次冻结使用不同快照目录
+  [PASS] 后一次冻结不改写前一次快照
+  [PASS] 快照 manifest 记录文件摘要
+  [PASS] 清理旧快照时保留活动任务引用
+  [PASS] 忙碌拒绝不写快照
+  [PASS] 生成签名稳定
+  [PASS] 视觉锁定变化让生成签名失效
+  [PASS] 工作流/模型变化让生成签名失效
+  [PASS] 辅助线/倍率/总镜数变化让生成签名失效
+  [PASS] 离线占位帧文案变化让生成签名失效
+  [PASS] 离线链纳入文案与绘制参数
+  [PASS] 离线文案改动进入生成签名
+  [PASS] 时间轴改动不进入生成签名
+  [PASS] 真实出图链不因文案改动失效
+  [PASS] 生成缓存命中并校验图像摘要
+  [PASS] 缓存图像被改坏时按未命中处理
+  [PASS] 片段指纹纳入选中图与实际提示词
+  [PASS] 片段指纹仍排除时间轴镜长
+  [PASS] 生成缓存检查发生在出图之前
+  [PASS] 读回分镜会清空选中图摘要
+  [PASS] 未恢复证据时旧片段被判过期
+  [PASS] 证据缺失时不放行并记录原因
+  [PASS] 恢复证据后旧片段可复用
+  [PASS] 恢复证据不掩盖真实内容改动
+  [PASS] 单镜重拍不恢复目标镜证据
+  [PASS] 两条复用路径都恢复证据
+  [PASS] 生成缓存命中后不再出图且直接出片
+  [PASS] 烧录模式包含固定层与逐条字幕卡
+  [PASS] sidecar 模式只保留固定层
+  [PASS] 字幕卡是透明底且尺寸正确
+  [PASS] 文字层时间窗 内 抽帧符合预期
+  [PASS] 文字层时间窗 外 抽帧符合预期
+  [PASS] RunRequest 支持字幕模式
+  [PASS] RenderRequest 支持字幕模式
+  [PASS] 保存字幕模式进入项目设置
+
+[38] 混音画面长度权威
+  [PASS] 配音短于画面时画面不被截断
+  [PASS] 配音长于画面时以画面为准
+  [PASS] 无配音铺等长静音轨
+
+[39] 旧项目母版回填
+  [PASS] 回填前没有 manifest
+  [PASS] 回填补出 legacy manifest
+  [PASS] 回填哈希等于成片实算
+  [PASS] 回填 artifact_id 稳定
+  [PASS] 二次回填不重写
+  [PASS] 已有 manifest 不被回填覆盖
+  [PASS] 成片缺失时不写 manifest
+  [PASS] 损坏的 manifest 不被覆盖
+  [PASS] 并发回填只产出一份 manifest
+  [PASS] 只读访问不为旧项目写 manifest
+  [PASS] 同尺寸同 mtime 的不同内容指纹不同
+  [PASS] 内容相同 mtime 变化指纹不变
+  [PASS] 品牌指纹参与导出缓存键
+
+[37] 第二轮：前端保存屏障与状态映射
+  [PASS] 字幕保存进入统一队列
+  [PASS] 每个保存域各自登记失败
+  [PASS] 字幕失败进入统一失败登记
+  [PASS] 整表重写时锁住字段级编辑
+  [PASS] 正在输入的草稿不被服务端回写冲掉
+  [PASS] 保存失败把字段退回服务端值
+  [PASS] 色板保存读取实时 revision
+  [PASS] 保存中禁止拍摄
+  [PASS] useRun 显式区分已停止
+  [PASS] 创作页显示已停止而非已产出
+  [PASS] 混合质检按模式数量汇总
+  [PASS] 品牌未保存时阻断导出
+  [PASS] 详情抽屉标注中断与部分产出
+  [PASS] 同画幅品牌导出在界面可见
+  [PASS] 离线镜头静帧标注来源
+  [PASS] 导出预设可在界面选择
+  [PASS] 字幕模式可保存并立即排队
+
+结果：976 项通过，0 项失败
+
+> yiyan-web@0.1.0 build
+> tsc --noEmit && vite build
+
+[36mvite v8.3.4 [32mbuilding client environment for production...[36m[39m
+transforming...
+✓ 33 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                   0.46 kB │ gzip:   0.32 kB
+dist/assets/index-Yb62cLxl.css   61.47 kB │ gzip:  12.77 kB
+dist/assets/index-CI41PK47.js   384.52 kB │ gzip: 114.69 kB
+
+[32m✓ built in 281ms[39m
+
+=== ���ȫ���Լ� ===
+
+=== ǰ�����ͼ���빹�� ===
+
+ȫ��ͨ����

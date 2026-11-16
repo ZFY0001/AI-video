@@ -1,0 +1,87 @@
+[
+  {
+    "probe": "task_queue_capability",
+    "second_task_accepted": false,
+    "reason": "已有任务在运行，请等待完成或先停止",
+    "persistent_statuses": [
+      "running",
+      "done",
+      "canceled",
+      "failed",
+      "interrupted"
+    ]
+  },
+  {
+    "probe": "new_project_owner_write_failure",
+    "callback_returned": true,
+    "persisted_owner": null,
+    "anonymous_can_view_after_db_recovers": true,
+    "warning_logged": true
+  },
+  {
+    "probe": "selected_frame_not_used_by_kenburns",
+    "selected": "generated-1.png",
+    "encoded_input": "shot01_clean.png",
+    "same_pixels": false
+  },
+  {
+    "probe": "cache_lookup_after_image_generation",
+    "additional_image_generations": 1,
+    "additional_video_encodes": 0,
+    "selected_current_frame_matches_encoded_input": false
+  },
+  {
+    "probe": "selected_candidate_evidence",
+    "selected": "generated-1.png",
+    "selected_hash": "deb9a090d2e497ac71058fd0bab1afc2b5709ff8f974225060cec9ab9843b96a",
+    "recorded_hash": "7746893254e55b699f80fc652cf26962af034ecf0802478518d12ce28720c7d1",
+    "hashes_match": false,
+    "candidates_generated": 3
+  },
+  {
+    "probe": "cache_omits_subject_visual_lock",
+    "effective_prompt_changed": true,
+    "cache_key_changed": false
+  },
+  {
+    "probe": "cache_omits_image_provider_config",
+    "cache_key_changed": false
+  },
+  {
+    "probe": "rejected_render_overwrites_active_snapshot",
+    "rejected_status": 409,
+    "same_snapshot_path": true,
+    "active_profile_changed": true,
+    "active_snapshot_painted": true
+  },
+  {
+    "probe": "painted_master_vs_history_export_source",
+    "task_result": "painted/final.mp4",
+    "export_source": "output/final.mp4",
+    "same_source": false,
+    "history_fixed_source_exists": true
+  },
+  {
+    "probe": "subtitle_edit_only_affects_sidecar",
+    "same_video_bytes": true,
+    "edited_sidecar_contains_new_text": true,
+    "cleared_sidecar_empty": true
+  },
+  {
+    "probe": "same_aspect_brand_export",
+    "status": 422,
+    "detail": "成片已经是 9:16，不需要再导出"
+  },
+  {
+    "probe": "brand_access_and_revision",
+    "route_status": {
+      "owner": 200,
+      "other_guest": 404,
+      "anonymous": 404
+    },
+    "project_revision_before": 0,
+    "project_revision_after": 0,
+    "brand_version": 1,
+    "shared_lock": true
+  }
+]

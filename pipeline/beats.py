@@ -23,10 +23,9 @@
 
 from __future__ import annotations
 
-from .proc import run as run_hidden
-
 import array
 import math
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -116,20 +115,14 @@ def decode_pcm(path: Path, ffmpeg: str | None = None) -> bytes:
         from .video import FFMPEG as _FFMPEG
 
         ffmpeg = _FFMPEG
-    proc = run_hidden(
+    proc = subprocess.run(
         [str(ffmpeg), "-v", "error", "-i", str(path),
          "-ac", "1", "-ar", str(SAMPLE_RATE), "-f", "s16le", "-"],
         capture_output=True,
-        # **必须显式 text=False**：输出是原始 PCM 字节流，被解码成 str 就废了
-        # （array.frombytes 只收 bytes）。proc.run 默认 text=True 是给文本场景的。
-        text=False,
         timeout=600,
     )
     if proc.returncode != 0:
-        # proc.run 现在统一带 text=True，stderr 已经是 str；但仍兼容 bytes 的情况
-        # （万一某处直接调 subprocess，或走了别的 helper）
-        raw = proc.stderr or ""
-        err = (raw if isinstance(raw, str) else raw.decode("utf-8", "replace")).strip()[:300]
+        err = (proc.stderr or b"").decode("utf-8", "replace").strip()[:300]
         raise BeatError(f"解码失败（{proc.returncode}）：{err}")
     return proc.stdout
 

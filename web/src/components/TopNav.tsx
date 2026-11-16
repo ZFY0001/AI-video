@@ -3,6 +3,8 @@ import { avatarOf, useAuth } from '../lib/auth'
 
 const NAV = [
   { key: 'create', label: '创作台' },
+  { key: 'projects', label: '项目' },
+  { key: 'tasks', label: '任务' },
   { key: 'history', label: '成片墙' },
   { key: 'settings', label: '设置' },
   { key: 'profile', label: '个人中心' },
@@ -121,11 +123,11 @@ export function TopNav({
     <header className="sticky top-0 z-40 border-b border-[var(--ring)] bg-[var(--nav-bg)] backdrop-blur-2xl">
       <div className="mx-auto flex h-[56px] max-w-[1340px] items-center gap-3 px-6">
         <a
-          href="#workspace"
+          href="#create"
           className="flex items-center gap-2.5"
           onClick={(e) => {
             e.preventDefault()
-            document.getElementById('workspace')?.scrollIntoView({ behavior: 'smooth' })
+            onNavigate('create')
           }}
         >
           <Logo />
@@ -134,7 +136,7 @@ export function TopNav({
 
         <nav className="ml-5 hidden items-stretch self-stretch md:flex">
           {NAV.map((item) => {
-            const active = route === item.key
+            const active = route === item.key || (route === 'plan' && item.key === 'projects')
             return (
               <button
                 key={item.key}
@@ -157,25 +159,52 @@ export function TopNav({
           })}
         </nav>
 
-        <div className="ml-auto flex items-center gap-3">
-          <span className="hidden sm:flex sm:items-center sm:gap-1.5">
+        <div className="ml-auto flex items-center gap-2 sm:gap-3">
+          <span className="flex items-center gap-1.5" title={text}>
             <span
-              className="h-[6px] w-[6px] rounded-full"
+              className="h-[6px] w-[6px] shrink-0 rounded-full"
               style={{
                 background: 'currentColor',
                 color: tone === 'ok' ? 'var(--color-ok)' : tone === 'warn' ? 'var(--color-warn)' : 'var(--color-ink-mute)',
                 boxShadow: '0 0 8px currentColor',
               }}
             />
-            <span className="text-[12.5px] text-ink-dim">{text}</span>
+            <span className="hidden text-[12.5px] text-ink-dim sm:inline">{text}</span>
           </span>
-          <span className="hidden font-mono text-[10.5px] tracking-[0.06em] text-ink-mute md:block">
+          <span className="hidden font-mono text-[10.5px] tracking-[0.06em] text-ink-mute lg:block">
             v{version}
           </span>
           <ThemeToggle theme={theme} onToggle={onToggleTheme} />
           <UserChip route={route} onNavigate={onNavigate} />
         </div>
       </div>
+
+      {/* 窄屏导航：桌面那排 md:flex 在手机上整排消失，等于没有导航。
+          这里补一条可横滑的芯片导航，跟顶栏一起吸顶，任何页面都够得着。 */}
+      <nav
+        aria-label="主导航"
+        className="scroll-thin flex items-center gap-1 overflow-x-auto border-t border-[var(--ring)] px-3 py-1.5 md:hidden"
+      >
+        {NAV.map((item) => {
+          const active = route === item.key || (route === 'plan' && item.key === 'projects')
+          return (
+            <button
+              key={item.key}
+              type="button"
+              onClick={() => onNavigate(item.key)}
+              aria-current={active ? 'page' : undefined}
+              className={[
+                'shrink-0 rounded-lg px-3 py-1.5 text-[12.5px] transition-colors',
+                active
+                  ? 'bg-[var(--ctl)] font-semibold text-ink'
+                  : 'text-ink-dim hover:bg-[var(--ctl)]/60 hover:text-ink',
+              ].join(' ')}
+            >
+              {item.label}
+            </button>
+          )
+        })}
+      </nav>
     </header>
   )
 }

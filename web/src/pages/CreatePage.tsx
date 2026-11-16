@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { LogStream } from '../components/LogStream'
 import {
@@ -25,12 +25,14 @@ import {
   type MusicMode,
   type Preset,
 } from '../lib/api'
+import { PALETTE_OPTIONS } from '../lib/palettes'
 
 const DEFAULT_FORM: FormState = {
   theme: '给我的家乡方城烩面做一条 15 秒宣传片',
   duration: 15,
   aspect: '16:9',
   style: '烟火气、暖色调、纪实风',
+  palette: 'auto',
   shot_len: 5,
   max_shots: null,
   live: false,
@@ -40,10 +42,6 @@ const DEFAULT_FORM: FormState = {
   painted_fps: 24,
   painted_quality: 'medium',
   clean_frames: false,
-  // 默认「必须真图」：此前默认允许占位帧兜底，ComfyUI 没开时会静默出一条
-  // 色块片、界面还显示成功——用户会以为是自己提示词写错了。
-  // 验收链路（不要真画面）时取消勾选即可。
-  require_real_image: true,
   mode: 'narration',
   audio: '',
   audio_name: '',
@@ -52,6 +50,42 @@ const DEFAULT_FORM: FormState = {
   bpm: 0,
   beat_offset: 0,
   auto_beats: true,
+}
+
+/** 创作台草稿：切页/刷新不该丢掉刚写的一句话与上传的音轨。
+ *
+ * 只存表单，不存运行结果。读回来时逐字段校验类型——损坏的草稿不能让输入框
+ * 收到一个数字型的主题或字符串型的时长。
+ */
+const DRAFT_KEY = 'yiyan.form'
+
+function loadDraft(): FormState {
+  try {
+    const raw = localStorage.getItem(DRAFT_KEY)
+    if (!raw) return DEFAULT_FORM
+    const data = JSON.parse(raw) as Record<string, unknown>
+    if (!data || typeof data !== 'object') return DEFAULT_FORM
+    const merged: FormState = { ...DEFAULT_FORM }
+    for (const key of Object.keys(DEFAULT_FORM) as (keyof FormState)[]) {
+      const value = data[key]
+      if (value === undefined || value === null) continue
+      if (typeof value === typeof DEFAULT_FORM[key]) {
+        ;(merged as unknown as Record<string, unknown>)[key] = value
+      } else if (key === 'max_shots' && typeof value === 'number') {
+        merged.max_shots = value
+      }
+    }
+    if (!['narration', 'song', 'bgm'].includes(merged.mode)) merged.mode = DEFAULT_FORM.mode
+    if (!['fast', 'medium', 'high'].includes(merged.painted_quality)) {
+      merged.painted_quality = DEFAULT_FORM.painted_quality
+    }
+    if (!PALETTE_OPTIONS.some((item) => item.value === merged.palette)) {
+      merged.palette = DEFAULT_FORM.palette
+    }
+    return merged
+  } catch {
+    return DEFAULT_FORM
+  }
 }
 
 const MODE_OPTIONS: { value: MusicMode; label: string; hint: string }[] = [
@@ -97,7 +131,7 @@ export function CreatePage({
   onPlan?: (runId: string) => void
 }) {
   const { phase, jobId, stage, pct, logs, env, result, error, start, cancel, reset } = run
-  const [form, setForm] = useState<FormState>(DEFAULT_FORM)
+  const [form, setForm] = useState<FormState>(loadDraft)
   const [presetIndex, setPresetIndex] = useState(0)
   const [planning, setPlanning] = useState(false)
   const [planError, setPlanError] = useState('')
@@ -105,10 +139,26 @@ export function CreatePage({
   const [audioBusy, setAudioBusy] = useState(false)
   const [audioError, setAudioError] = useState('')
   const [dragging, setDragging] = useState(false)
+  /** 高级设置在首屏默认折叠：镜头时长/色板/画质/构图辅助不是每次都要改。 */
+  const [advancedOpen, setAdvancedOpen] = useState(false)
+  /** 实时日志默认折叠，避免待命时用一个大空框占满右栏。 */
+  const [logsOpen, setLogsOpen] = useState(false)
   const audioInput = useRef<HTMLInputElement>(null)
   const lyricsInput = useRef<HTMLInputElement>(null)
   /** 切进 MV 之前的时长。切回解说短片时还给他——不然一次上传会把 15 秒改成 222 秒。 */
-  const preMusicDuration = useRef(DEFAULT_FORM.duration)
+  const preMusicDuration = useRef(form.duration)
+
+  // 输入自动存本机。400ms 防抖：打字时不必每个字符写一次 localStorage。
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      try {
+        localStorage.setItem(DRAFT_KEY, JSON.stringify(form))
+      } catch {
+        /* 隐私模式写不进去，不影响本次会话 */
+      }
+    }, 400)
+    return () => window.clearTimeout(timer)
+  }, [form])
 
   const presets = meta?.presets ?? []
   const patch = (next: Partial<FormState>) => setForm((prev) => ({ ...prev, ...next }))
@@ -180,21 +230,41 @@ export function CreatePage({
   // 用户拿到一条没有音乐的片子却看不到任何报错。
   const missingAudio = isMusic && !form.audio
   const canStart = form.theme.trim().length > 0 && !running && !missingAudio
+  const modeLabel = MODE_OPTIONS.find((item) => item.value === form.mode)?.label ?? form.mode
+  const generationLabel = form.painted
+    ? `代码绘制 ${form.painted_fps}fps`
+    : form.live
+      ? '真实模型'
+      : '离线引擎'
   /** 按镜长估个镜数，只用于提示代价，不参与任何计算。 */
   const shotEstimate = Math.max(1, Math.ceil(form.duration / Math.max(2, form.shot_len)))
   const lyricsLines = form.lyrics.split('\n').filter((line) => line.trim()).length
 
-  const statusTone = phase === 'running' ? 'live' : phase === 'done' ? 'ok' : phase === 'error' ? 'bad' : 'idle'
+  const statusTone =
+    phase === 'running' ? 'live'
+      : phase === 'done' ? 'ok'
+        : phase === 'canceled' ? 'warn'
+          : phase === 'error' || phase === 'rejected' ? 'bad'
+            : 'idle'
   const statusText =
-    phase === 'running' ? '运行中' : phase === 'done' ? '已产出' : phase === 'error' ? '已中断' : '待命'
+    phase === 'running' ? '运行中'
+      : phase === 'done' ? '已产出'
+        : phase === 'canceled' ? '已停止'
+          : phase === 'error' ? '已中断'
+            : phase === 'rejected' ? '未开始'
+              : '待命'
   const statusHint =
     phase === 'running'
       ? '管线在工作线程里跑，可以随时停止'
       : phase === 'done'
         ? '成片已落盘，可直接播放或下载'
-        : phase === 'error'
-          ? '看日志定位原因，修好后重跑'
-          : '写好一句话，剩下的交给管线'
+        : phase === 'canceled'
+          ? '已停止；已完成的部分仍在项目里，可重拍或只重合成'
+          : phase === 'error'
+            ? '看日志定位原因，修好后重跑'
+            : phase === 'rejected'
+              ? '提交被拒绝，管线没有启动；按下面的提示改完再试'
+              : '写好一句话，剩下的交给管线'
 
   const compose = result?.compose
 
@@ -211,10 +281,10 @@ export function CreatePage({
           本地运行 · 不出网
         </span>
       </div>
-      <div className="grid items-stretch gap-4 xl:grid-cols-[minmax(0,1.12fr)_minmax(0,0.88fr)]">
+      <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_320px] xl:grid-cols-[minmax(0,1.12fr)_minmax(0,0.88fr)]">
         {/* ------------------------------------------------ 输入 */}
         <div className="flex flex-col gap-3">
-          <Panel className="px-5 py-4">
+          <Panel className="order-1 px-5 py-4">
             <div className="flex items-center justify-between gap-3">
               <h3 className="text-[15px] font-semibold">内容</h3>
               <button
@@ -234,10 +304,12 @@ export function CreatePage({
               disabled={running}
               className="field-input mt-3 min-h-[82px] text-[13.5px] leading-[1.7]"
             />
-            <p className="mt-2 text-[11.5px] text-ink-mute">写清题材、时长与气质，剩下的交给管线</p>
+            <p className="mt-2 text-[11.5px] text-ink-mute">
+              写清题材、时长与气质，剩下的交给管线。输入会自动保存在本机，切页或刷新都不会丢
+            </p>
           </Panel>
 
-          <Panel className="px-5 py-0">
+          <Panel className="order-3 px-5 py-0">
             <SettingRow
               label="模式"
               sub={form.mode === 'narration' ? '中文配音' : form.mode === 'song' ? '音乐即音轨' : '音乐垫底'}
@@ -286,18 +358,6 @@ export function CreatePage({
               )}
             </SettingRow>
 
-            <SettingRow
-              label="必须真图"
-              sub={form.require_real_image ? 'ComfyUI 不可用就报错' : '允许占位帧兜底'}
-            >
-              <Switch
-                checked={form.require_real_image}
-                onChange={(value) => patch({ require_real_image: value })}
-                label="必须真图"
-                disabled={running}
-              />
-            </SettingRow>
-
             <SettingRow label="画幅" sub="出片比例">
               <Segmented
                 options={(meta?.aspects ?? ['16:9', '9:16', '1:1']).map((value) => ({
@@ -310,23 +370,6 @@ export function CreatePage({
               />
             </SettingRow>
 
-            <SettingRow label="镜头时长" sub={`${form.shot_len.toFixed(1)} 秒 / 镜`}>
-              <div className="flex w-[186px] items-center gap-2">
-                <input
-                  type="range"
-                  min={2}
-                  max={10}
-                  step={0.5}
-                  value={form.shot_len}
-                  disabled={running}
-                  onChange={(event) => patch({ shot_len: Number(event.target.value) })}
-                />
-                <span className="w-8 shrink-0 text-right font-mono text-[11.5px] tabular-nums text-ink-dim">
-                  {form.shot_len.toFixed(1)}
-                </span>
-              </div>
-            </SettingRow>
-
             <SettingRow label="风格" sub="影响出图与配音">
               <input
                 value={form.style}
@@ -337,30 +380,10 @@ export function CreatePage({
               />
             </SettingRow>
 
-            <SettingRow label="画质" sub={form.painted ? '三档实测速度' : '仅代码绘制时生效'}>
-              <Segmented
-                options={QUALITY_OPTIONS.map(({ value, label, hint }) => ({ value, label, hint }))}
-                value={form.painted_quality}
-                onChange={(value) => patch({ painted_quality: value })}
-                disabled={running || !form.painted}
-              />
-            </SettingRow>
-
-            <SettingRow label="帧率" sub={form.painted ? '低帧率换时间' : '仅代码绘制时生效'}>
-              <div className="seg">
-                {[12, 18, 24].map((fps) => (
-                  <button
-                    key={fps}
-                    type="button"
-                    data-active={form.painted_fps === fps}
-                    disabled={running || !form.painted}
-                    onClick={() => patch({ painted_fps: fps })}
-                  >
-                    {fps}
-                  </button>
-                ))}
-              </div>
-            </SettingRow>
+            {/* 生成方式先于参数：画质/帧率只有代码绘制才有效，不该排在开关前面。 */}
+            <div className="pt-3 pb-1">
+              <p className="text-[11px] tracking-wide text-ink-mute">生成方式</p>
+            </div>
 
             <SettingRow
               label="代码绘制"
@@ -387,18 +410,111 @@ export function CreatePage({
               />
             </SettingRow>
 
-            <SettingRow label="三分线参考" sub="出图时叠构图辅助线">
-              <Switch
-                checked={form.guides}
-                onChange={(value) => patch({ guides: value })}
-                label="三分线参考"
-                disabled={running}
-              />
-            </SettingRow>
+            <div className="flex items-center justify-between gap-3 border-t border-[var(--ring)] py-3">
+              <div className="min-w-0">
+                <p className="text-[13.5px] leading-snug">高级设置</p>
+                <p className="mt-0.5 text-[11.5px] leading-relaxed text-ink-mute">
+                  镜头时长、色板、画质、帧率与构图辅助
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAdvancedOpen((open) => !open)}
+                aria-expanded={advancedOpen}
+                className="shrink-0 text-[12.5px] text-brand transition-opacity hover:opacity-80"
+              >
+                {advancedOpen ? '收起' : '展开'}
+              </button>
+            </div>
+
+            {advancedOpen && (
+              <>
+                <SettingRow label="镜头时长" sub={`${form.shot_len.toFixed(1)} 秒 / 镜`}>
+                  <div className="flex w-[186px] items-center gap-2">
+                    <input
+                      type="range"
+                      min={2}
+                      max={10}
+                      step={0.5}
+                      value={form.shot_len}
+                      disabled={running}
+                      onChange={(event) => patch({ shot_len: Number(event.target.value) })}
+                    />
+                    <span className="w-8 shrink-0 text-right font-mono text-[11.5px] tabular-nums text-ink-dim">
+                      {form.shot_len.toFixed(1)}
+                    </span>
+                  </div>
+                </SettingRow>
+
+                <SettingRow label="色板" sub="只改配色，不改题材与文案">
+                  <div className="flex items-center gap-2">
+                    <span className="flex gap-1">
+                      {PALETTE_OPTIONS.find((item) => item.value === form.palette)?.colors.map((color) => (
+                        <i
+                          key={color}
+                          className="h-3 w-3 rounded-full border border-white/25"
+                          style={{ background: color }}
+                        />
+                      ))}
+                    </span>
+                    <select
+                      className="field-input w-[132px]"
+                      value={form.palette}
+                      disabled={running}
+                      onChange={(event) => patch({ palette: event.target.value as FormState['palette'] })}
+                    >
+                      {PALETTE_OPTIONS.map((item) => (
+                        <option key={item.value} value={item.value}>
+                          {item.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </SettingRow>
+
+                {form.painted && (
+                  <>
+                    <SettingRow label="画质" sub="代码绘制三档实测速度">
+                      <Segmented
+                        options={QUALITY_OPTIONS.map(({ value, label, hint }) => ({ value, label, hint }))}
+                        value={form.painted_quality}
+                        onChange={(value) => patch({ painted_quality: value })}
+                        disabled={running}
+                      />
+                    </SettingRow>
+
+                    <SettingRow label="帧率" sub="低帧率换时间">
+                      <div className="seg">
+                        {[12, 18, 24].map((fps) => (
+                          <button
+                            key={fps}
+                            type="button"
+                            data-active={form.painted_fps === fps}
+                            disabled={running}
+                            onClick={() => patch({ painted_fps: fps })}
+                          >
+                            {fps}
+                          </button>
+                        ))}
+                      </div>
+                    </SettingRow>
+                  </>
+                )}
+
+                <SettingRow label="三分线参考" sub="出图时叠构图辅助线">
+                  <Switch
+                    checked={form.guides}
+                    onChange={(value) => patch({ guides: value })}
+                    label="三分线参考"
+                    disabled={running}
+                  />
+                </SettingRow>
+              </>
+            )}
           </Panel>
 
           {isMusic && (
-            <Panel className="px-5 py-4">
+            <Panel className="order-2 px-5 py-4">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <h3 className="text-[15px] font-semibold">音轨与歌词</h3>
@@ -577,118 +693,158 @@ export function CreatePage({
             </Panel>
           )}
 
-          {form.painted && <EtaRow label="预计还需" value={humanDuration(estimate)} />}
+          {form.painted && (
+            <div className="order-4">
+              <EtaRow label="预计还需" value={humanDuration(estimate)} />
+            </div>
+          )}
 
-          <div className="flex items-center justify-end gap-2 pt-1">
-            {phase === 'done' && (
-              <Button small onClick={reset}>
-                清空本次
-              </Button>
-            )}
-            {running ? (
-              <Button variant="danger" onClick={cancel}>
-                停止生成
-              </Button>
-            ) : (
-              <>
-                <Button
-                  disabled={!canStart || planning}
-                  onClick={() => {
-                    if (!onPlan) return
-                    setPlanning(true)
-                    setPlanError('')
-                    createPlan(form)
-                      .then((plan) => onPlan(plan.run_id))
-                      .catch((err: unknown) =>
-                        setPlanError(err instanceof Error ? err.message : '拆解失败'),
-                      )
-                      .finally(() => setPlanning(false))
-                  }}
-                >
-                  {planning ? '拆解中…' : '先拆解'}
-                </Button>
-                <Button variant="primary" disabled={!canStart} onClick={() => void start(form)}>
-                  开始生成
-                </Button>
-              </>
-            )}
+          <div className="order-5 sticky bottom-0 z-20 mt-1 rounded-2xl border border-[var(--ring)] bg-[var(--ctl)] px-3.5 py-2.5 shadow-[var(--sh-1)] backdrop-blur">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="min-w-0 text-[11.5px] leading-relaxed text-ink-mute">
+                {`${modeLabel} · ${form.aspect} · ${
+                  form.mode === 'song' ? '以音频为准' : `${form.duration}s`
+                } · ${generationLabel}`}
+                {missingAudio ? ' · 待上传音频' : ''}
+              </p>
+              <div className="flex items-center gap-2">
+                {phase === 'done' && (
+                  <Button small onClick={reset}>
+                    清空本次
+                  </Button>
+                )}
+                {running ? (
+                  <Button variant="danger" onClick={cancel}>
+                    停止生成
+                  </Button>
+                ) : (
+                  <>
+                    <Button
+                      disabled={!canStart || planning}
+                      onClick={() => {
+                        if (!onPlan) return
+                        setPlanning(true)
+                        setPlanError('')
+                        createPlan(form)
+                          .then((plan) => onPlan(plan.run_id))
+                          .catch((err: unknown) =>
+                            setPlanError(err instanceof Error ? err.message : '拆解失败'),
+                          )
+                          .finally(() => setPlanning(false))
+                      }}
+                    >
+                      {planning ? '拆解中…' : '先拆解'}
+                    </Button>
+                    <Button variant="primary" disabled={!canStart} onClick={() => void start(form)}>
+                      开始生成
+                    </Button>
+                  </>
+                )}
+              </div>
+            </div>
+            <p className="mt-1 text-[11px] leading-relaxed text-ink-mute">
+              {planError ||
+                (missingAudio
+                  ? '选了 MV / 配乐，先上传一段音频'
+                  : '「先拆解」只出剧本与分镜，不渲染；「开始生成」直接跑到成片')}
+            </p>
           </div>
-          <p className="text-right text-[11px] text-ink-mute">
-            {planError ||
-              (missingAudio
-                ? '选了 MV / 配乐，先上传一段音频'
-                : '「先拆解」只出剧本与分镜，不渲染；「开始生成」直接跑到成片')}
-          </p>
         </div>
 
         {/* ------------------------------------------------ 运行状态 */}
-        <Panel className="flex min-h-[620px] flex-col p-6">
+        <Panel className="flex flex-col self-start p-5 xl:sticky xl:top-4">
           <div className="flex items-start justify-between gap-3">
             <SectionTitle title="运行状态" hint={statusHint} />
             <Badge tone={statusTone}>{statusText}</Badge>
           </div>
 
-          <div className="mt-6 flex items-end justify-between gap-4">
-            <div className="min-w-0">
-              <p className="flex items-baseline gap-1 font-mono text-[34px] leading-none font-medium tabular-nums">
-                {percent}
-                <span className="text-[15px] text-ink-mute">%</span>
+          {phase === 'idle' && !result ? (
+            <div className="mt-4 space-y-3">
+              <dl className="divide-y divide-[var(--ring)]">
+                {[
+                  ['模式', modeLabel],
+                  ['输出', `${form.aspect} · ${form.mode === 'song' ? '以音频为准' : `${form.duration} 秒`}`],
+                  ['生成方式', generationLabel],
+                  ['预计镜头', `约 ${shotEstimate} 镜`],
+                ].map(([label, value]) => (
+                  <div key={label} className="flex items-baseline justify-between gap-3 py-1.5">
+                    <dt className="text-[11.5px] text-ink-mute">{label}</dt>
+                    <dd className="text-right text-[12px] text-ink-dim">{value}</dd>
+                  </div>
+                ))}
+              </dl>
+              <p className="text-[11px] leading-relaxed text-ink-mute">
+                待命。填好左上角的一句话，点底部「开始生成」直接出片，或「先拆解」只出分镜。
               </p>
-              <p className="mt-2 truncate text-[12px] text-ink-dim">{stage}</p>
             </div>
-            <p className="shrink-0 text-right font-mono text-[10.5px] leading-relaxed text-ink-mute">
-              {form.aspect} · {form.duration}s
-              <br />
-              {isMusic
-                ? form.mode === 'song'
-                  ? 'MV · 音乐即音轨'
-                  : '配乐 · 音乐垫底'
-                : form.painted
-                  ? `代码绘制 ${form.painted_fps}fps`
-                  : form.live
-                    ? '真实模型'
-                    : '离线引擎'}
-            </p>
-          </div>
+          ) : (
+            <>
+              <div className="mt-5 flex items-end justify-between gap-4">
+                <div className="min-w-0">
+                  <p className="flex items-baseline gap-1 font-mono text-[34px] leading-none font-medium tabular-nums">
+                    {percent}
+                    <span className="text-[15px] text-ink-mute">%</span>
+                  </p>
+                  <p className="mt-2 truncate text-[12px] text-ink-dim">{stage}</p>
+                </div>
+                <p className="shrink-0 text-right font-mono text-[10.5px] leading-relaxed text-ink-mute">
+                  {form.aspect} · {form.duration}s
+                  <br />
+                  {generationLabel}
+                </p>
+              </div>
 
-          <div className="progress-track mt-4">
-            <div className="progress-fill" style={{ width: `${Math.max(percent, running ? 2 : 0)}%` }} />
-          </div>
+              <div className="progress-track mt-4">
+                <div className="progress-fill" style={{ width: `${Math.max(percent, running ? 2 : 0)}%` }} />
+              </div>
 
-          <div className="mt-4">
-            <PipelineBeam stage={stage} />
-          </div>
+              <div className="mt-4">
+                <PipelineBeam stage={stage} />
+              </div>
 
-          <div className="mt-6 flex min-h-0 flex-1 flex-col">
-            <div className="mb-2 flex items-center justify-between">
-              <span className="text-[10.5px] tracking-wide text-ink-mute">实时日志</span>
-              <span className="font-mono text-[10px] tabular-nums text-ink-mute">
-                {logs.length} 条
-              </span>
-            </div>
-            <div className="min-h-[240px] flex-1">
-              <LogStream logs={logs} />
-            </div>
-          </div>
+              {error && (
+                <div className="mt-3 rounded-xl border border-err/30 bg-err/10 px-3.5 py-2.5">
+                  <p className="text-[11.5px] leading-relaxed break-words text-err">{error}</p>
+                </div>
+              )}
 
-          {error && (
-            <div className="mt-3 rounded-xl border border-err/30 bg-err/10 px-3.5 py-2.5">
-              <p className="text-[11.5px] leading-relaxed break-words text-err">{error}</p>
-            </div>
+              <div className="mt-4">
+                <button
+                  type="button"
+                  onClick={() => setLogsOpen((open) => !open)}
+                  aria-expanded={logsOpen}
+                  className="flex w-full items-center justify-between border-t border-[var(--ring)] pt-3 text-[11.5px] text-ink-mute transition-colors hover:text-ink-dim"
+                >
+                  <span>实时日志 · {logs.length} 条</span>
+                  <span>{logsOpen ? '收起' : '展开'}</span>
+                </button>
+                {logsOpen && (
+                  <div className="mt-2 max-h-[300px] overflow-y-auto scroll-thin pr-1">
+                    <LogStream logs={logs} />
+                  </div>
+                )}
+              </div>
+            </>
           )}
         </Panel>
       </div>
 
       {/* ------------------------------------------------ 成片 */}
-      {result && compose && (
+      {result && compose?.video && (
         <Panel className="mt-4 p-6">
           <SectionTitle
             title="本次成片"
             hint={`${compose.resolution} · ${compose.duration.toFixed(1)} 秒 · ${compose.size_mb} MB`}
             right={
               <div className="flex items-center gap-2">
-                <Badge tone="ok">已产出</Badge>
-                {result.stopped && <Badge tone="warn">中途停止</Badge>}
+                <Badge tone={result.stopped ? 'warn' : 'ok'}>
+                  {result.stopped ? '已停止 · 部分产出' : '已产出'}
+                </Badge>
+                {result.shot_preview ? (
+                  <Badge tone="warn">{`单镜预览${result.shot_id ? ` 镜${result.shot_id}` : ''}`}</Badge>
+                ) : (
+                  result.preview && <Badge tone="warn">低清预览</Badge>
+                )}
               </div>
             }
           />
@@ -742,6 +898,15 @@ export function CreatePage({
               </ul>
             </div>
           )}
+        </Panel>
+      )}
+
+      {result?.stopped && !compose?.video && (
+        <Panel className="mt-4 px-5 py-4">
+          <p className="text-[12.5px] font-medium text-warn">已停止，没有可交付的成片</p>
+          <p className="mt-1 text-[11.5px] leading-relaxed text-ink-mute">
+            正在运行的子进程已释放；已完成的镜头仍保留在项目里，可重新拍摄或只重合成。
+          </p>
         </Panel>
       )}
     </div>

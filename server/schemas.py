@@ -30,6 +30,7 @@ class RunRequest(BaseModel):
     duration: int = Field(default=15, ge=5, le=600)
     aspect: str = "16:9"
     style: str = Field(default="", max_length=200)
+    palette: Literal["auto", "warm", "cool", "film", "ink", "vivid"] = "auto"
     shot_len: float = Field(default=5.0, ge=2.0, le=15.0)
     max_shots: int | None = Field(default=None, ge=1, le=200)
     live: bool = False
@@ -39,8 +40,6 @@ class RunRequest(BaseModel):
     painted_fps: int = Field(default=24, ge=4, le=60)
     painted_quality: str = "medium"
     clean_frames: bool = False
-    #: 只允许真图。True 时不挂占位帧兜底，ComfyUI 不可用直接 422/失败。
-    require_real_image: bool = False
 
     #: 音轨 token（由 `POST /api/media/audio` 返回），空串表示没有音轨。
     #:
@@ -55,6 +54,8 @@ class RunRequest(BaseModel):
     #: 用 Literal 而不是 str：`MusicInput.is_bgm` 只认 "bgm" 这一个值，拼错一个
     #: 字母就静默变成 MV——这种错必须在进管线之前被 422 拦住。
     music_role: Literal["song", "bgm"] = "song"
+    #: 字幕呈现方式。burn=烧进画面；sidecar=只出外置字幕；none=不要字幕。
+    subtitle_mode: Literal["burn", "sidecar", "none"] = "burn"
     bpm: float = Field(default=0.0, ge=0.0, le=400.0)
     beat_offset: float = Field(default=0.0, ge=0.0, le=10.0)
     auto_beats: bool = True
@@ -138,6 +139,8 @@ class ShotPatch(BaseModel):
     前端整行提交也可以：它读回来的值原样发回去，没改的字段自然等于原值。
     """
 
+    #: 期望的项目版本。带上它就能把"读到旧版本 → 覆盖新版本"变成明确 409。
+    expected_revision: int | None = Field(default=None, ge=0, exclude=True)
     duration: float | None = Field(default=None, gt=0, le=60)
     visual: str | None = None
     camera: str | None = None
@@ -148,9 +151,22 @@ class ShotPatch(BaseModel):
     acceptance: str | None = None
 
 
+class SubjectPatch(BaseModel):
+    """角色卡改动。`visual_lock` 是**文本**锁定，不是参考图。
+
+    改它不会重写任何镜头的提示词：出图时按当前锁定拼接（见
+    `Pipeline._locked_prompt`），已拍好的画面仍需单镜重拍才会用上新锁定。
+    """
+
+    expected_revision: int | None = Field(default=None, ge=0, exclude=True)
+    name: str | None = Field(default=None, min_length=1, max_length=40)
+    visual_lock: str | None = Field(default=None, max_length=400)
+
+
 class ScriptPatch(BaseModel):
     """剧本改动。改文字不改结构时用它；`acts` 传整个数组替换。"""
 
+    expected_revision: int | None = Field(default=None, ge=0, exclude=True)
     title: str | None = None
     logline: str | None = None
     tone: str | None = None
@@ -168,6 +184,7 @@ class ReplanRequest(BaseModel):
     """
 
     force: bool = False
+    expected_revision: int | None = Field(default=None, ge=0, exclude=True)
 
 
 class ReorderRequest(BaseModel):
@@ -178,16 +195,95 @@ class ReorderRequest(BaseModel):
     """
 
     order: list[int] = Field(min_length=1)
+    expected_revision: int | None = Field(default=None, ge=0, exclude=True)
+
+
+class SubtitleLine(BaseModel):
+    """一条人工字幕。时间以成片时间为准（未叠加项目整体偏移）。"""
+
+    start: float = Field(ge=0, le=36000)
+    end: float = Field(gt=0, le=36000)
+    text: str = Field(min_length=1, max_length=200)
+
+
+class SubtitlesBody(BaseModel):
+    """整条字幕轨的替换。
+
+    `lines=None` = 恢复按镜头/歌词自动生成；`lines=[]` = 明确不要字幕。
+    两者必须能区分：否则"删光所有行"会被当成"恢复自动"，用户会发现删了个寂寞。
+    """
+
+    expected_revision: int | None = Field(default=None, ge=0, exclude=True)
+    lines: list[SubtitleLine] | None = Field(default=None, max_length=500)
+    #: 字幕呈现方式；None = 不改当前设置。
+    subtitle_mode: Literal["burn", "sidecar", "none"] | None = None
+
+
+class SubtitleStyleBody(BaseModel):
+    """换一套整句字幕样式。未知 id 由接口回 422 并列出可选值。"""
+
+    expected_revision: int | None = Field(default=None, ge=0, exclude=True)
+    preset: str = Field(min_length=1, max_length=32)
+
+
+class ExportRequest(BaseModel):
+    """成片导出规格。只支持「从原片派生」，不重新出图。
+
+    `fit` 用模糊背景补边、保留完整画面；`crop` 中心裁切、可能切到靠边字幕。
+    """
+
+    aspect: Literal["16:9", "9:16", "1:1"]
+    mode: Literal["fit", "crop"]
+    #: 导出规格预设（standard / douyin / shipinhao / bilibili / high / small）。
+    #: 用 str 而不是 Literal：预设清单由 exports.PRESETS 单一维护，
+    #: 这里再抄一份字面量迟早对不上。
+    preset: str = "standard"
+
+
+class BatchExportRequest(BaseModel):
+    """一次选多个规格批量导出。重复项由后端去重，原片已是目标画幅的会跳过。"""
+
+    targets: list[ExportRequest] = Field(min_length=1, max_length=8)
+
+
+class PaletteBody(BaseModel):
+    """项目色板。只改配色，不改题材、文案与分镜。"""
+
+    expected_revision: int | None = Field(default=None, ge=0, exclude=True)
+    palette: Literal["auto", "warm", "cool", "film", "ink", "vivid"]
+
+
+class BrandRequest(BaseModel):
+    """品牌模板。只作用于导出层，不改原片、不改变时长与音轨。"""
+
+    expected_version: int | None = Field(default=None, ge=0, exclude=True)
+    name: str = Field(default="", max_length=40)
+    intro_text: str = Field(default="", max_length=60)
+    outro_text: str = Field(default="", max_length=60)
+    position: Literal["bottom-right", "bottom-left", "top-right", "top-left"] = "bottom-right"
+    opacity: float = Field(default=0.85, ge=0.1, le=1.0)
+    intro_seconds: float = Field(default=2.0, ge=0.0, le=8.0)
+    outro_seconds: float = Field(default=2.0, ge=0.0, le=8.0)
 
 
 class RenderRequest(BaseModel):
-    """按拆解文件拍摄。分镜已经定稿，这里只剩"怎么拍"的选项。"""
+    """按拆解文件拍摄。分镜已经定稿，这里只剩"怎么拍"的选项。
 
-    live: bool = True
-    painted: bool = False
-    painted_fps: int = Field(default=24, ge=4, le=60)
-    painted_quality: str = "medium"
-    clean_frames: bool = False
+    **默认全部为 None**：不传 = 继承项目里保存的 `render_profile`。以前这里
+    默认 `live=True`，于是从拆解页点「开始拍摄」（只传 run_id）会把一条离线
+    拆解悄悄拍成"真实模型"，用户的选择在换页之后被默认值覆盖了。
+    """
+
+    #: 期望的项目版本。拍摄前前端会先 flush 未落盘的编辑，再带上最新版本；
+    #: 版本不符回 409，避免"拍的是旧分镜"。
+    expected_revision: int | None = Field(default=None, ge=0, exclude=True)
+    live: bool | None = None
+    painted: bool | None = None
+    painted_fps: int | None = Field(default=None, ge=4, le=60)
+    painted_quality: str | None = None
+    clean_frames: bool | None = None
+    #: 色板。None = 继承项目保存的 palette；值 = 覆盖本次拍摄。
+    palette: Literal["auto", "warm", "cool", "film", "ink", "vivid"] | None = None
     #: MV / 配乐模式。给路径即以音频为时长权威，歌词按 lyrics 上屏。
     audio: str = ""
     lyrics: str = ""
@@ -197,10 +293,23 @@ class RenderRequest(BaseModel):
     bpm: float = 0.0
     beat_offset: float = 0.0
     auto_beats: bool = True
+    #: 混音电平。0 = 静音，1 = 原值。None = 继承项目保存的 audio_edit。
+    voice_gain: float | None = Field(default=None, ge=0, le=2)
+    music_gain: float | None = Field(default=None, ge=0, le=2)
+    #: 对白优先：人声出现时自动压低垫乐。 None = 继承项目保存值。
+    voice_duck: bool | None = None
+    #: 字幕整体偏移（秒）。SRT 与烧录字幕使用同一时间轴。
+    subtitle_offset: float | None = Field(default=None, ge=-10, le=10)
+    #: 字幕呈现方式。None = 继承项目保存值（默认 burn）。
+    subtitle_mode: Literal["burn", "sidecar", "none"] | None = None
+    #: 镜头间转场。None = 继承项目保存值（默认 none）。
+    transition: Literal["none", "fade", "slide", "black"] | None = None
+    #: 字幕卡入场淡入。None = 继承项目保存值（默认关）。
+    text_anim: bool | None = None
 
     @field_validator("painted_quality")
     @classmethod
-    def _quality(cls, value: str) -> str:
-        if value not in QUALITIES:
+    def _quality(cls, value: str | None) -> str | None:
+        if value is not None and value not in QUALITIES:
             raise ValueError(f"画质必须是 {'/'.join(QUALITIES)}")
         return value

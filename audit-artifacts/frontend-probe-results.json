@@ -1,0 +1,12 @@
+{
+  "malformed_plan_hash_error": "URIError",
+  "lf_event_count": 1,
+  "crlf_event_count": 0,
+  "normal_eof_without_terminal_event": {
+    "resolved": true,
+    "event_types": [
+      "progress"
+    ]
+  },
+  "note": "useRun.connect returns after readSse resolves; no terminal event or snapshot check occurs."
+}

@@ -1,0 +1,51 @@
+{
+  "date": "2026-11-16",
+  "build": "index-CSGcRZoM.js (392.68 kB), index-CJRC2CZ2.css (63.31 kB)",
+  "method": "browser-use evaluate_script + same-origin iframe; audit fixture data; viewport = iframe content viewport",
+  "create": {
+    "1080x720": {
+      "start_button_y": 653,
+      "plan_button_y": 653,
+      "main_scroll_width": 1070,
+      "idle_panel": { "x": 726, "y": 158, "w": 320, "h": 274 },
+      "advanced_collapsed": true,
+      "shot_length_hidden": true,
+      "mv_audio_panel_y": 359,
+      "mv_start_button_y": 653
+    },
+    "1340x880": {
+      "start_button_y": 813,
+      "main_scroll_width": 1330,
+      "idle_panel": { "x": 749, "y": 158, "w": 557, "h": 256 }
+    }
+  },
+  "plan": {
+    "1080x720": {
+      "title_width": 328,
+      "description_width": 328,
+      "main_scroll_width": 1070,
+      "first_shot_preview_y": 362,
+      "render_button_y": 176,
+      "config_collapsed_initial": true,
+      "config_expand_shows_palette": true
+    },
+    "1340x880": {
+      "description_width": 328,
+      "main_scroll_width": 1330,
+      "first_shot_preview_y": 362,
+      "render_button_y": 176
+    },
+    "390x844": {
+      "main_scroll_width": 387,
+      "title_width": 328,
+      "render_button": { "x": 266, "right": 356, "y": 337 },
+      "horizontal_overflow": false
+    }
+  },
+  "notes": [
+    "创作台 1080/1340 首屏均可见「先拆解」「开始生成」；MV 音轨面板在 1080 首屏内（y=359）。",
+    "拆解页 1080/1340 首镜操作在 y=362；标题说明宽 328px，不再被按钮挤压。",
+    "390px 拆解页 main.scrollWidth=387，无横向溢出；顶部主按钮可见。",
+    "未覆盖：320px、200% 缩放、深色主题全页、真实登录态。"
+  ]
+}

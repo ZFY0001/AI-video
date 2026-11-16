@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import time
 import urllib.error
@@ -22,7 +24,6 @@ from typing import Any, Protocol
 
 from . import net
 from .image_render import RESOLUTIONS, render_still
-from .net import describe_net_error, open_url
 from .models import ProjectBrief, Shot
 
 # 出图分辨率上限（长边像素）。出图尺寸与成片尺寸是两件事：
@@ -32,6 +33,55 @@ from .models import ProjectBrief, Shot
 GEN_MAX_EDGE = 640
 # 潜变量尺寸必须是 8 的倍数（VAE 下采样 8 倍）
 _LATENT_STEP = 8
+
+
+def inspect_image(path: Path) -> dict[str, Any]:
+    """真实读取图片并做基础技术检查。
+
+    这是"质检到底看没看画面"的最低答案：文件存在、能解码、尺寸合理、
+    不是纯黑/纯白/纯色。返回的哈希用于复查"这个分数对应哪张图"。
+
+    检查失败不代表画面一定差（可能是生成器写坏了文件），但**必须**让流程
+    停下来，而不是继续按镜头文字给分。
+    """
+    try:
+        data = Path(path).read_bytes()
+    except OSError as exc:
+        return {"ok": False, "reason": f"读不到图片：{exc}", "sha256": "", "bytes": 0}
+
+    digest = hashlib.sha256(data).hexdigest()
+    try:
+        from PIL import Image, ImageStat
+
+        with Image.open(io.BytesIO(data)) as im:
+            im.load()
+            width, height = im.size
+            stat = ImageStat.Stat(im.convert("L"))
+            mean = float(stat.mean[0])
+            contrast = float(stat.stddev[0])
+    except Exception as exc:  # noqa: BLE001 —— 损坏文件、未知格式都算技术检查失败
+        return {
+            "ok": False,
+            "reason": f"无法解码图片：{exc}",
+            "sha256": digest,
+            "bytes": len(data),
+        }
+
+    base = {
+        "sha256": digest,
+        "bytes": len(data),
+        "width": width,
+        "height": height,
+        "mean": round(mean, 1),
+        "contrast": round(contrast, 2),
+    }
+    if width < 64 or height < 64:
+        return {**base, "ok": False, "reason": f"尺寸过小（{width}x{height}）"}
+    if mean < 2 or mean > 253:
+        return {**base, "ok": False, "reason": "画面接近纯黑或纯白"}
+    if contrast < 1.5:
+        return {**base, "ok": False, "reason": "画面接近纯色（对比度过低）"}
+    return {**base, "ok": True, "reason": ""}
 
 
 def generation_size(aspect_ratio: str, max_edge: int = GEN_MAX_EDGE) -> tuple[int, int]:
@@ -51,6 +101,8 @@ class ImageProvider(Protocol):
     name: str
 
     def available(self) -> tuple[bool, str]: ...
+
+    def reference_capability(self) -> tuple[bool, str]: ...
 
     def generate(self, shot: Shot, brief: ProjectBrief, out_path: Path, seed: int) -> Path: ...
 
@@ -137,6 +189,11 @@ class ComfyUIProvider:
         tpl_ok, tpl_msg = self._template_ok()
         detail = f"{svc_msg} ｜ {tpl_msg}" if svc_ok and tpl_ok else f"{svc_msg}；{tpl_msg}"
         return (svc_ok and tpl_ok), detail
+
+    def reference_capability(self) -> tuple[bool, str]:
+        # 模板是 txt2img：只换提示词/尺寸/种子，没有 IPAdapter/ControlNet 之类的
+        # 参考图输入。把"不支持"明确报出来，别让用户以为传了参考图就会生效。
+        return False, "不支持参考图（txt2img 模板只吃提示词）"
 
     def _load_graph(self, shot: Shot, brief: ProjectBrief, seed: int) -> dict[str, Any]:
         """把工作流模板改造成本次请求的 API 格式图。
@@ -284,6 +341,10 @@ class OfflineFrameProvider:
             return False, "缺少 Pillow"
         return True, "ok"
 
+    def reference_capability(self) -> tuple[bool, str]:
+        # 占位帧按镜头规格确定性合成，没有"参考图"这个输入。
+        return False, "不支持参考图（占位帧按镜头规格合成）"
+
     def generate(self, shot: Shot, brief: ProjectBrief, out_path: Path, seed: int) -> Path:
         genre = getattr(shot, "_genre", None)
         if genre is None:
@@ -296,204 +357,38 @@ class OfflineFrameProvider:
 # ------------------------------------------------------------------ 云端出图
 @dataclass
 class CloudImageProvider:
-    """智谱 CogView 云端出图。
+    """云端出图占位实现：**未配置端点时直接拒绝**，避免意外产生费用。"""
 
-    **为什么必须有**：本地 SD 1.5 有两条硬伤——文本编码器只认英文（分镜描述里的
-    中文等于没写），以及"速度优先"档只有 8 步 / 512×320。CogView 是中文语料的，
-    且直接出 1440×720，画质与遵循度都不是一个量级。
-
-    同步接口（不像视频要轮询）：
-        POST {base}/images/generations  {model, prompt, size}
-        → data[0].url
-    """
-
-    #: 画幅 → CogView 支持的尺寸（16:9 用 1440x720，最接近且原生支持）
-    SIZE_BY_ASPECT = {
-        "16:9": "1440x720",
-        "9:16": "720x1440",
-        "1:1": "1024x1024",
-        "4:3": "1152x864",
-        "3:4": "864x1152",
-    }
-
-    #: 用哪家：zhipu / minimax。接口路径与响应结构不同，generate() 里分支
-    provider: str = "zhipu"
-    base_url: str = ""
-    api_key: str = ""
-    model: str = "cogview-4"
+    base_url: str
+    api_key: str
+    model: str = ""
     name: str = "cloud"
 
     def available(self) -> tuple[bool, str]:
         if not self.base_url or not self.api_key:
-            return False, f"未配置 {self.provider} 的端点与 Key"
-        label = {"minimax": "MiniMax", "zhipu": "智谱"}.get(self.provider, self.provider)
-        return True, f"{label} {self.model}（云端出图）"
+            # 报真实存在的配置项（VIDEO_API_*），别提根本不存在的 CLOUD_IMAGE_*
+            return False, "未配置云端出图端点（VIDEO_API_BASE_URL / VIDEO_API_KEY）"
+        return False, "云端出图适配器尚未接入，本项目以本地出图为主"
+
+    def reference_capability(self) -> tuple[bool, str]:
+        return False, "不支持参考图（适配器未接入）"
 
     def generate(self, shot: Shot, brief: ProjectBrief, out_path: Path, seed: int) -> Path:
-        prompt = (shot.prompt_image or shot.visual or "").strip()
-        if not prompt:
-            raise ImageError("镜头没有可用的画面描述")
-        aspect = str(getattr(brief, "aspect_ratio", "") or "16:9")
-        if self.provider == "minimax":
-            return self._minimax(prompt, aspect, out_path)
-        return self._zhipu(prompt, aspect, out_path)
-
-    def _zhipu(self, prompt: str, aspect: str, out_path: Path) -> Path:
-        """智谱 CogView：同步接口，data[0].url。"""
-        size = self.SIZE_BY_ASPECT.get(aspect, "1440x720")
-
-        body = {"model": self.model, "prompt": prompt, "size": size}
-        url = self.base_url.rstrip("/") + "/images/generations"
-        data: dict = {}
-        # 429 是**账户级限流**，不是"这次请求有问题"：一条片 3 镜要连续调 6 次
-        # （3 次出图 + 3 次出片），必然撞上。退避重试 4 次，总等待约 60 秒。
-        for attempt in range(4):
-            req = urllib.request.Request(
-                url, data=json.dumps(body).encode(), method="POST",
-                headers={"Authorization": "Bearer " + self.api_key, "Content-Type": "application/json"},
-            )
-            try:
-                with open_url(req, timeout=120) as r:
-                    data = json.loads(r.read() or b"{}")
-                break
-            except urllib.error.HTTPError as exc:
-                if exc.code == 429 and attempt < 3:
-                    time.sleep(8 * (attempt + 1))
-                    continue
-                raise ImageError("云端出图失败：" + describe_net_error(url, exc)) from exc
-            except Exception as exc:  # noqa: BLE001
-                raise ImageError("云端出图失败：" + describe_net_error(url, exc)) from exc
-        # 调用之间留一点间隔，降低撞限流的概率
-        time.sleep(2)
-
-        url = ((data.get("data") or [{}])[0] or {}).get("url")
-        if not url:
-            raise ImageError("云端出图未返回图片地址：" + json.dumps(data, ensure_ascii=False)[:200])
-
-        self._download(url, out_path)
-        return out_path
-
-    def _minimax(self, prompt: str, aspect: str, out_path: Path) -> Path:
-        """MiniMax image-01：同步接口，data.image_urls[]（OSS 临时链接，需立刻下载）。
-
-        与智谱的差异：分辨率用 `aspect_ratio`（"16:9"）而不是 `size`（"1440x720"），
-        返回的是数组而不是单对象。
-        """
-        body = {
-            "model": self.model or "image-01",
-            "prompt": prompt,
-            "aspect_ratio": aspect if aspect in ("1:1", "16:9", "4:3", "3:2", "2:3", "3:4", "9:16") else "16:9",
-            "response_format": "url",
-        }
-        url = self.base_url.rstrip("/") + "/v1/image_generation"
-        data: dict = {}
-        for attempt in range(4):
-            req = urllib.request.Request(
-                url, data=json.dumps(body).encode(), method="POST",
-                headers={"Authorization": "Bearer " + self.api_key, "Content-Type": "application/json"},
-            )
-            try:
-                with open_url(req, timeout=180) as r:
-                    data = json.loads(r.read() or b"{}")
-                break
-            except urllib.error.HTTPError as exc:
-                if exc.code == 429 and attempt < 3:
-                    time.sleep(8 * (attempt + 1))
-                    continue
-                raise ImageError("云端出图失败：" + describe_net_error(url, exc)) from exc
-            except Exception as exc:  # noqa: BLE001
-                raise ImageError("云端出图失败：" + describe_net_error(url, exc)) from exc
-
-        base_resp = data.get("base_resp") or {}
-        if base_resp.get("status_code") not in (0, "0", None):
-            raise ImageError(f"MiniMax 出图失败：{base_resp.get('status_msg') or data}")
-        urls = (data.get("data") or {}).get("image_urls") or []
-        if not urls:
-            raise ImageError("MiniMax 未返回图片地址：" + json.dumps(data, ensure_ascii=False)[:200])
-        self._download(str(urls[0]), out_path)
-        time.sleep(1)
-        return out_path
-
-    def _download(self, url: str, out_path: Path) -> None:
-        """下载到本地。云端给的 URL 都有有效期（MiniMax 是 OSS 临时链接），
-        所以必须立刻落盘，绝不能存链接。"""
-        try:
-            with open_url(urllib.request.Request(url), timeout=180) as r:
-                out_path.parent.mkdir(parents=True, exist_ok=True)
-                out_path.write_bytes(r.read())
-        except Exception as exc:  # noqa: BLE001
-            raise ImageError("云端图片下载失败：" + describe_net_error(url, exc)) from exc
+        raise ImageError("云端出图未启用")
 
 
 # ------------------------------------------------------------------ 选择
-def build_provider_chain(settings, workflow_dir: Path,
-                         require_real: bool = False) -> list[ImageProvider]:
+def build_provider_chain(settings, workflow_dir: Path) -> list[ImageProvider]:
     """按优先级给出 provider 链：能跑真图就用真图，否则占位帧。
 
     复用 provider_status 的缓存结果，不再单独探测一次——否则这条出片主路径
     上会白等一次 ComfyUI 连接超时。
-
-    `require_real=True` 时**剔除占位帧**，ComfyUI 不可用就抛错。为什么要有这个：
-
-    占位帧本来是"链路验证信号"（像彩条），不是给用户看的画面。但它默认兜底，
-    于是 ComfyUI 没开时用户会拿到一条色块片，界面还显示"成功"——**静默降级
-    比失败更糟**，因为人会误以为是自己写错了提示词。这个开关让"要么给真图，
-    要么明确告诉我为什么给不了"成为可选行为。
     """
     chain: list[ImageProvider] = []
-    # require_real 时绕过 30 秒缓存：用户可能刚启动 ComfyUI，缓存会误判成不可用
     comfy_status = next(
-        (i for i in provider_status(settings, workflow_dir, fresh=require_real)
+        (i for i in provider_status(settings, workflow_dir)
          if i["provider"] == "comfy"), None)
-    comfy_ok = bool(comfy_status and comfy_status["available"] == "是")
-    # 按 model_registry 的配置决定「用哪家、哪个模型」。找不到就回落默认，
-    # 不让一个拼错的模型名把整条出图链路带崩。
-    from . import model_registry
-
-    img_provider, img_model, _img_meta = model_registry.resolve(settings, "image")
-    prov_meta = model_registry.get_provider(img_provider) or {}
-    key_name = str(prov_meta.get("key_env") or "VIDEO_API_KEY")
-    img_key = str(settings.get(key_name) or settings.get("VIDEO_API_KEY") or "")
-    img_base = str(settings.get(img_provider.upper() + "_BASE_URL")
-                   or prov_meta.get("base_url") or settings.get("VIDEO_API_BASE_URL") or "")
-    cloud = CloudImageProvider(provider=img_provider, base_url=img_base,
-                               api_key=img_key, model=img_model)
-    cloud_ok = cloud.available()[0]
-
-    # **IMAGE_MODE 决定谁在前面**：
-    #   cloud（默认）= 画质优先，云端出精修，本地当断网/限流的备胎
-    #   local        = 省钱/草稿优先，本地先出，云端当质量兜底
-    # 为什么需要 local：本地出图约 8 秒/张且免费，云端约 60 秒/镜且按秒计费。
-    # 先用免费的把构图试对、再花钱出精修，这才是本地模型该待的位置——
-    # 而不是"云端挂了才想起来它"。
-    mode = str(settings.get("IMAGE_MODE") or "cloud").strip().lower()
-    prefer_local = mode == "local"
-
-    if require_real:
-        local_provider = (ComfyUIProvider(
-            base_url=settings.get("COMFYUI_BASE_URL"), workflow_dir=workflow_dir)
-            if comfy_ok else None)
-        if prefer_local:
-            if local_provider is not None:
-                chain.append(local_provider)
-            if cloud_ok:
-                chain.append(cloud)
-        else:
-            if cloud_ok:
-                chain.append(cloud)
-            if local_provider is not None:
-                chain.append(local_provider)
-        if not chain:
-            detail = (comfy_status or {}).get("detail", "未探测到 ComfyUI")
-            raise ImageError(
-                "已勾选「必须真图」，但没有可用出图后端：云端未配置（VIDEO_API_KEY），"
-                "本地 ComfyUI 也不可用（" + str(detail)[:120] + "）。"
-                "｜配置云端 Key，或先启动 ComfyUI，或取消勾选「必须真图」。"
-                "（当前 IMAGE_MODE=" + mode + "）")
-        return chain
-
-    # 不要求真图：本地优先（免费），ComfyUI 不通就占位帧
-    if comfy_ok:
+    if comfy_status and comfy_status["available"] == "是":
         chain.append(ComfyUIProvider(
             base_url=settings.get("COMFYUI_BASE_URL"), workflow_dir=workflow_dir))
     chain.append(OfflineFrameProvider())
@@ -523,18 +418,19 @@ def provider_status(settings, workflow_dir: Path, fresh: bool = False) -> list[d
 
     comfy = ComfyUIProvider(base_url=settings.get("COMFYUI_BASE_URL"), workflow_dir=workflow_dir)
     offline = OfflineFrameProvider()
-    # 必须和 build_provider_chain 用同一套解析，否则体检显示"智谱"、
-    # 实际出图走 MiniMax——用户看到的和跑的是两回事（实测踩过）
-    from . import model_registry as _mr
-
-    _prov, _model, _meta = _mr.resolve(settings, "image")
-    _pmeta = _mr.get_provider(_prov) or {}
-    _key = str(settings.get(str(_pmeta.get("key_env") or "")) or settings.get("VIDEO_API_KEY") or "")
-    _base = str(settings.get(_prov.upper() + "_BASE_URL") or _pmeta.get("base_url") or settings.get("VIDEO_API_BASE_URL") or "")
-    cloud = CloudImageProvider(provider=_prov, base_url=_base, api_key=_key, model=_model)
+    cloud = CloudImageProvider(base_url=settings.get("VIDEO_API_BASE_URL"), api_key=settings.get("VIDEO_API_KEY"))
     out = []
     for prov in (comfy, offline, cloud):
         ok, why = prov.available()
-        out.append({"provider": prov.name, "available": "是" if ok else "否", "detail": why})
+        ref_ok, ref_why = prov.reference_capability()
+        out.append({
+            "provider": prov.name,
+            "available": "是" if ok else "否",
+            "detail": why,
+            # 参考图能力单独报：能出图 ≠ 能用参考图。两者混在一起，
+            # 用户会以为"ComfyUI 在跑"就等于"角色一致性有保障"。
+            "reference_images": "是" if ref_ok else "否",
+            "reference_detail": ref_why,
+        })
     _STATUS_CACHE[key] = (now, [dict(item) for item in out])
     return out

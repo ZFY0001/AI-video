@@ -97,12 +97,8 @@ def describe_net_error(url: str, exc: BaseException) -> str:
         if isinstance(reason, (ConnectionRefusedError, socket.gaierror)) or "refused" in str(reason).lower():
             return "连接被拒绝——服务没有在运行（或端口不对）"
         if "timed out" in str(reason).lower() or isinstance(reason, TimeoutError):
-            # 别假设"服务在跑"：Windows 防火墙对回环端口是**静默丢包**，端口完全没监听
-            # 也会走满超时、抛 TimeoutError 而不是 ConnectionRefused（实测 8188）。
-            # 原来写"服务在跑但没响应"，会把人引去查显存，实际只是没启动。
-            return ("连接超时（端口无响应）——可能是服务还没启动，"
-                    "也可能是启动了但卡住不返回（如 ComfyUI 显存不足卡在 VAE 解码）；"
-                    "先确认端口在监听（netstat -ano | findstr 8188）")
+            return ("连接超时——服务在跑但没响应（显存不足时 ComfyUI 会卡在 VAE 解码，"
+                    "既不报错也不返回）")
         return f"连接失败（{reason}）"
     if isinstance(exc, TimeoutError):
         return "请求超时"

@@ -1,0 +1,70 @@
+[
+  {
+    "probe": "anonymous_job_list",
+    "status": 200,
+    "exposes_private_theme": true
+  },
+  {
+    "probe": "anonymous_job_snapshot",
+    "status": 200,
+    "exposes_private_result": true
+  },
+  {
+    "probe": "anonymous_job_sse",
+    "status": 200
+  },
+  {
+    "probe": "anonymous_job_cancel",
+    "status": 200,
+    "cancel_requested": true
+  },
+  {
+    "probe": "anonymous_arbitrary_env_key",
+    "status": 200,
+    "accepted": true
+  },
+  {
+    "probe": "ownership_lookup_failure",
+    "anonymous_can_view": true
+  },
+  {
+    "probe": "concurrent_shot_patch",
+    "errors": [],
+    "both_requests_succeeded": true,
+    "saved_visuals": [
+      "old-1",
+      "new-2"
+    ],
+    "updates_kept": 1
+  },
+  {
+    "probe": "empty_render_options_for_offline_plan",
+    "saved_live": false,
+    "actual_options": {
+      "live": true,
+      "painted": false,
+      "fps": 24,
+      "quality": "medium"
+    }
+  },
+  {
+    "probe": "render_with_expired_upload_and_run_copy",
+    "existing_run_audio": true,
+    "status": 422,
+    "detail": "音轨不存在或已被清理，请重新上传"
+  },
+  {
+    "probe": "quality_description_ignores_image",
+    "same_description": true,
+    "both_images_missing": true
+  },
+  {
+    "probe": "same_second_run_id_collision",
+    "same_run_id": true,
+    "same_project_directory": true
+  },
+  {
+    "probe": "static_prefix_boundary",
+    "sibling_file_accepted": true
+  }
+]

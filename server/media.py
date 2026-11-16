@@ -11,11 +11,13 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import threading
 import time
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
 from pipeline.config import UPLOADS_DIR
 from pipeline.video import run_ffprobe
@@ -36,6 +38,10 @@ TOKEN_RE = re.compile(r"^[0-9a-f]{16}\.[a-z0-9]{2,5}$")
 #: 敢删的前提是 `Pipeline._adopt_music_source()` 会把音轨复制进运行目录，
 #: 一次运行自带副本。删掉的只影响"拿很久以前的拆解重拍"。
 UPLOAD_TTL_SECONDS = 7 * 24 * 3600
+
+#: 同时跑几个 ffprobe。探测是子进程 + 磁盘 IO，无限并发会把事件循环外的工作线程
+#: 和磁盘一起压住；本机工具两路足够，超出的排队等待，而不是拒绝。
+_PROBE_SLOTS = threading.BoundedSemaphore(2)
 
 
 def resolve_audio(token: str) -> Path:
@@ -138,6 +144,28 @@ def read_audio_meta(token: str) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
+def _finalize_upload(tmp: Path, name: str, size: int, digest_hex: str) -> tuple[str, float, str]:
+    """探测 → 改名 → 写旁注。**同步函数**：由接口放进线程池执行。
+
+    这里包含 ffprobe 子进程与磁盘操作，放在 async 接口里会直接堵住事件循环——
+    上传一首大文件时，别的接口（包括任务状态与心跳）都会跟着卡住。
+    """
+    with _PROBE_SLOTS:
+        duration, fmt = _probe_audio(tmp)
+    ext = _pick_ext(name, fmt)
+    token = f"{digest_hex[:16]}.{ext}"
+    target = UPLOADS_DIR / token
+    # 同内容不重复落盘：用户改一句歌词反复传同一首歌是常态。
+    tmp.replace(target)
+    # 旁注：原始文件名与容器格式。拆解页的徽章要显示"海阔天空.mp3"，
+    # 而磁盘上只有一串哈希，这份旁注是唯一还记得名字的地方。
+    (UPLOADS_DIR / f"{token}.json").write_text(
+        json.dumps({"name": name, "size": size, "format": fmt}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return token, duration, fmt
+
+
 @router.post("/media/audio", response_model=AudioUpload)
 async def upload_audio(file: UploadFile = File(...)) -> dict:
     """上传音轨，返回 token。
@@ -145,6 +173,7 @@ async def upload_audio(file: UploadFile = File(...)) -> dict:
     边读边算哈希、边数字节：超过上限立刻 413，不把 70 MB 先收完再判断。
     落盘用 `.part` 再改名，进程被杀也不会在上传目录里留下半截文件——
     那种文件会让下一次上传的哈希去重命中一个残缺文件。
+    探测与改名放到线程池，避免一次上传把整个 API 卡住。
     """
     name = Path(file.filename or "audio").name
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
@@ -170,17 +199,8 @@ async def upload_audio(file: UploadFile = File(...)) -> dict:
         if size == 0:
             raise HTTPException(status_code=422, detail="上传的是空文件")
 
-        duration, fmt = _probe_audio(tmp)
-        ext = _pick_ext(name, fmt)
-        token = f"{digest.hexdigest()[:16]}.{ext}"
-        target = UPLOADS_DIR / token
-        # 同内容不重复落盘：用户改一句歌词反复传同一首歌是常态。
-        tmp.replace(target)
-        # 旁注：原始文件名与容器格式。拆解页的徽章要显示"海阔天空.mp3"，
-        # 而磁盘上只有一串哈希，这份旁注是唯一还记得名字的地方。
-        (UPLOADS_DIR / f"{token}.json").write_text(
-            json.dumps({"name": name, "size": size, "format": fmt}, ensure_ascii=False),
-            encoding="utf-8",
+        token, duration, fmt = await run_in_threadpool(
+            _finalize_upload, tmp, name, size, digest.hexdigest()
         )
     except BaseException:
         tmp.unlink(missing_ok=True)

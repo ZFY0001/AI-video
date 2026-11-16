@@ -209,22 +209,123 @@ def silence(path: Path, duration: float) -> Path:
 
 
 # ------------------------------------------------------------------ 字幕
-def write_srt(board: Storyboard, out_path: Path) -> Path:
-    """按镜头时间轴写 SRT。UTF-8 带 BOM，Windows 端兼容性最好。"""
+def write_srt(board: Storyboard, out_path: Path, offset: float = 0.0) -> Path:
+    """按镜头时间轴写 SRT。UTF-8 带 BOM，Windows 端兼容性最好。
+
+    ``offset``：整体平移字幕（秒），用于校对外挂字幕与画面/声音的偏差。
+    平移后夹在 [0, 总时长] 内——提前过多会得到负起点，延后过多会超出成片，
+    两者都会让播放器显示异常。
+    """
+    limit = float(board.total_duration or 0.0)
     lines: list[str] = []
     idx = 1
     for shot in board.shots:
         text = caption_of(shot)
         if not text:
             continue
+        span = _shift_span(shot.start, shot.end, offset, limit)
+        if span is None:
+            continue
+        start, end = span
         lines.append(str(idx))
-        lines.append(f"{srt_time(shot.start)} --> {srt_time(shot.end)}")
+        lines.append(f"{srt_time(start)} --> {srt_time(end)}")
         lines.append(_wrap(text, 18))
         lines.append("")
         idx += 1
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines), encoding="utf-8-sig")
     return out_path
+
+
+def write_srt_lines(lines: list[dict], out_path: Path, offset: float = 0.0,
+                    limit: float = 0.0) -> Path:
+    """按用户编辑过的字幕轨写 SRT。
+
+    与 `write_srt` 共用同一套时间夹取规则：整体平移不能产生负时间，
+    也不能超出成片。人工编辑允许一行比镜头长，但仍不能越过片尾。
+    """
+    body: list[str] = []
+    idx = 1
+    for line in lines:
+        text = str(line.get("text") or "").strip()
+        if not text:
+            continue
+        span = _shift_span(line.get("start") or 0.0, line.get("end") or 0.0,
+                           offset, limit)
+        if span is None:
+            continue
+        start, end = span
+        body.append(str(idx))
+        body.append(f"{srt_time(start)} --> {srt_time(end)}")
+        body.append(_wrap(text, 18))
+        body.append("")
+        idx += 1
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n".join(body), encoding="utf-8-sig")
+    return out_path
+
+
+def _shift_span(start: float, end: float, offset: float, limit: float
+                ) -> tuple[float, float] | None:
+    """平移并夹取一条字幕；整条落在有效区间之外时返回 None。"""
+    start = float(start) + offset
+    end = float(end) + offset
+    if end <= 0:
+        return None
+    start = max(0.0, start)
+    if limit > 0:
+        if start >= limit:
+            return None
+        end = min(end, limit)
+    if end <= start:
+        return None
+    return start, end
+
+
+def parse_srt(raw: str) -> list[dict]:
+    """解析 SRT 为 ``[{start, end, text}]``（秒）。
+
+    容错优先：时间行不规范、缺序号、多行文本都尽量读出来——它服务于
+    "编辑已经产出的字幕"，读失败就等于用户的字幕突然不见了。
+    """
+    import re
+
+    # 带 BOM 的 SRT 里，第一行序号是 "\ufeff1"。BOM 不算空白，strip() 去不掉，
+    # isdigit() 也就认不出它是序号——结果序号被当成正文拼进第一句字幕。
+    raw = raw.replace("\ufeff", "")
+
+    def seconds(stamp: str) -> float | None:
+        match = re.match(r"\s*(\d+):(\d{2}):(\d{2})[,.](\d{1,3})", stamp)
+        if not match:
+            return None
+        h, m, s, ms = match.groups()
+        return int(h) * 3600 + int(m) * 60 + int(s) + int(ms.ljust(3, "0")) / 1000
+
+    lines: list[dict] = []
+    for block in raw.replace("\r", "").split("\n\n"):
+        rows = [row for row in block.split("\n") if row.strip()]
+        if not rows:
+            continue
+        time_row = next((row for row in rows if "-->" in row), "")
+        if not time_row:
+            continue
+        left, _, right = time_row.partition("-->")
+        start, end = seconds(left), seconds(right)
+        text = " ".join(row.strip() for row in rows if "-->" not in row and not row.strip().isdigit())
+        if start is None or end is None or end <= start or not text:
+            continue
+        lines.append({"start": round(start, 3), "end": round(end, 3), "text": text})
+    return lines
+
+
+def srt_to_lrc(raw: str) -> str:
+    """SRT → LRC。LRC 只有行首时间戳，适合把成片字幕交给播放器/剪辑软件。"""
+    def stamp(seconds: float) -> str:
+        total = max(0, int(round(seconds * 100)))
+        return f"[{total // 6000:02d}:{total % 6000 // 100:02d}.{total % 100:02d}]"
+
+    return "\n".join(f"{stamp(line['start'])}{line['text']}"
+                     for line in parse_srt(raw)) + "\n"
 
 
 def _wrap(text: str, per_line: int) -> str:

@@ -189,21 +189,35 @@ def assign_captions(shots: list[Any], lines: list[LyricLine]) -> int:
     return filled
 
 
-def lyric_srt(lines: list[LyricLine], out_path: Path) -> Path:
+def lyric_srt(lines: list[LyricLine], out_path: Path, offset: float = 0.0,
+              max_end: float | None = None) -> Path:
     """按歌词自己的时间轴写 SRT。
 
     为什么不用 ``tts.write_srt``：那个是**按镜头**写的，一镜一条；
     歌词可能一镜两句、也可能一句跨两镜。字幕文件应该按歌词自己的节奏走，
     播放器才会逐句显示。
+
+    ``offset``：整体平移（秒）。``max_end``：成片时长，平移后不得超出；
+    否则最后一句会停在黑屏上，甚至被播放器判成无效字幕。
     """
     body: list[str] = []
     idx = 1
     for ln in lines:
         text = (ln.text or "").strip()
-        if not text or ln.end <= ln.start:
+        start = float(ln.start) + offset
+        end = float(ln.end) + offset
+        # 被整体提前到 0 秒之前的歌词直接丢弃，不夹成残影。
+        if end <= 0:
+            continue
+        start = max(0.0, start)
+        if max_end is not None:
+            if start >= float(max_end):
+                continue
+            end = min(end, float(max_end))
+        if not text or end <= start:
             continue
         body.append(str(idx))
-        body.append(f"{_srt_time(ln.start)} --> {_srt_time(ln.end)}")
+        body.append(f"{_srt_time(start)} --> {_srt_time(end)}")
         body.append(text)
         body.append("")
         idx += 1

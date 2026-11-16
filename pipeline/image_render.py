@@ -19,6 +19,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from .common import stable_hash
 from .genre import Genre
 from .models import ProjectBrief, Shot, caption_of
+from .subtitle_style import SubtitleStyle, draw_subtitle
 
 RESOLUTIONS = {"16:9": (1920, 1080), "9:16": (1080, 1920), "1:1": (1080, 1080)}
 FONT_CANDIDATES = (
@@ -46,9 +47,6 @@ class FrameStyle:
     acceptance: str
     timecode: str
     note: str = ""
-    #: 这张画面是谁出的（comfy / cloud / offline / 空）。水印要靠它写实话：
-    #: 标"占位帧"or"AI 出图"，不能一律写死。
-    still_provider: str = ""
 
 
 def load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
@@ -69,7 +67,7 @@ def render_still(
     out_path: Path,
     total_shots: int = 1,
     show_guides: bool = False,
-    scale: int = 1,
+    scale: float = 1,
     with_text: bool = True,
 ) -> Path:
     """渲染单张占位帧并落盘，返回路径。
@@ -91,9 +89,19 @@ def render_still(
     return out_path
 
 
-def _dims(brief: ProjectBrief, scale: int = 1) -> tuple[int, int]:
+def _dims(brief: ProjectBrief, scale: float = 1) -> tuple[int, int]:
     w, h = RESOLUTIONS.get(brief.aspect_ratio, RESOLUTIONS["16:9"])
-    return w * max(1, scale), h * max(1, scale)
+    factor = max(0.1, float(scale))
+    # 允许 0.5：低清预览按半分辨率绘制，像素数少四倍。整数倍率的行为不变。
+    return max(2, int(round(w * factor))), max(2, int(round(h * factor)))
+
+
+def half_size(size: tuple[int, int]) -> tuple[int, int]:
+    """预览用半分辨率。宽高都保证偶数——H.264 yuv420p 不接受奇数尺寸。"""
+    return (
+        max(2, int(size[0]) // 2 // 2 * 2),
+        max(2, int(size[1]) // 2 // 2 * 2),
+    )
 
 
 def render_background(shot: Shot, brief: ProjectBrief, genre: Genre, w: int, h: int) -> Image.Image:
@@ -119,7 +127,6 @@ def _frame_style(shot: Shot, brief: ProjectBrief, genre: Genre, total_shots: int
         narration=caption_of(shot),
         acceptance=shot.acceptance,
         timecode=f"{shot.start:05.1f}-{shot.end:05.1f}s",
-        still_provider=getattr(shot, "still_provider", "") or "",
     )
 
 
@@ -130,18 +137,52 @@ def render_overlay(
     out_path: Path,
     total_shots: int = 1,
     show_guides: bool = False,
-    scale: int = 1,
+    scale: float = 1,
+    subtitle_text: str | None = None,
 ) -> Path:
     """渲染透明底文字层（RGBA），由 FFmpeg overlay 叠到运动背景之上。
 
     scale 必须与背景的运动画布倍率一致，否则文字会被二次缩放（糊）。
+
+    `subtitle_text`：None = 沿用镜头自带上屏文字；空串 = 只画镜号/标题等
+    固定文字，字幕由最终合成单独叠加。后者是“字幕可编辑”的关键：片段里
+    不能再烘死字幕，否则改完 SRT 画面仍是旧字。
     """
     w, h = _dims(brief, scale)
     img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img, "RGBA")
-    _paint_text(img, draw, _frame_style(shot, brief, genre, total_shots), genre, w, h, brief)
+    _paint_text(
+        img, draw, _frame_style(shot, brief, genre, total_shots), genre, w, h, brief,
+        subtitle_text=subtitle_text,
+    )
     if show_guides:
         _paint_guides(draw, w, h)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    img.save(out_path, "PNG")
+    return out_path
+
+
+def render_subtitle_card(
+    text: str,
+    brief: ProjectBrief,
+    out_path: Path,
+    scale: float = 1,
+    style: "SubtitleStyle | None" = None,
+    report: list[str] | None = None,
+) -> Path:
+    """只渲染一条字幕的透明底板，供最终合成按时间轴叠加。
+
+    字幕与背景、标题分开渲染，改字幕时只需重合成，不需要重新出图或重绘背景。
+    ``style`` 给定时按样式模板排版（跨画幅安全区、缺字回退）；None 保留旧的
+    写死排版，供不经过项目的旧调用兜底。
+    """
+    w, h = _dims(brief, scale)
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img, "RGBA")
+    if style is None:
+        _paint_subtitle_text(draw, text, w, h)
+    else:
+        draw_subtitle(draw, text, w, h, style, report)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     img.save(out_path, "PNG")
     return out_path
@@ -369,7 +410,8 @@ def _paint_subtitle_plates(draw: ImageDraw.ImageDraw, shot: Shot, w: int, h: int
 
 
 def _paint_text(img: Image.Image, draw: ImageDraw.ImageDraw, st: FrameStyle,
-                genre: Genre, w: int, h: int, brief: ProjectBrief) -> None:
+                genre: Genre, w: int, h: int, brief: ProjectBrief,
+                subtitle_text: str | None = None) -> None:
     pad = int(w * 0.045)
     f_badge = load_font(int(h * 0.026))
     f_small = load_font(int(h * 0.02))
@@ -390,40 +432,41 @@ def _paint_text(img: Image.Image, draw: ImageDraw.ImageDraw, st: FrameStyle,
     title = f"{st.index:02d} · {genre.subjects[(st.index - 1) % len(genre.subjects)]}"
     _text_with_shadow(draw, (pad, int(h * 0.62)), title, f_title, "#FFFFFF")
 
-    # 底部字幕（模拟成片字幕位）
-    sub_y = int(h * 0.845)
-    if st.narration:
-        lines = _wrap_cn(st.narration, 18)[:2]
-        for i, line in enumerate(lines):
-            tw = draw.textlength(line, font=f_sub)
-            x = (w - tw) / 2
-            y = sub_y + i * int(h * 0.055)
-            draw.rectangle(
-                [x - int(w * 0.012), y - int(h * 0.006), x + tw + int(w * 0.012), y + int(h * 0.05)],
-                fill=(0, 0, 0, 90),
-            )
-            _text_with_shadow(draw, (x, y), line, f_sub, "#FFFFFF")
+    # 底部字幕（模拟成片字幕位）。空串表示字幕由最终合成单独叠加。
+    text = st.narration if subtitle_text is None else subtitle_text
+    if text:
+        _paint_subtitle_text(draw, text, w, h, f_sub)
 
     # 左下角：验收标准（给质检用的可见依据）
     if st.acceptance:
         _text_with_shadow(draw, (pad, h - pad - int(h * 0.03)), f"验收：{st.acceptance}",
                           f_small, genre.accents[1])
 
-    # 右下角：画面来源水印。**必须按实际 provider 写**：
-    # 原来无条件写"占位帧 · 未接入文生图"，于是 ComfyUI 出了真图、成片里却
-    # 还标着"未接入"——比不标更糟，属于自相矛盾的假信息。
-    # "" 表示还没经过 provider（分镜示意帧），此时标占位帧是对的。
-    _prov = getattr(st, "still_provider", "") or ""
-    if _prov == "comfy":
-        tag = "AI 出图 · 本地 ComfyUI（SD 1.5）"
-    elif _prov == "cloud":
-        tag = "AI 出图 · 云端"
-    elif st.note:
-        tag = st.note
-    else:
-        tag = "占位帧 · 未接入文生图"
+    # 右下角：占位帧水印（诚实标注，避免误当成品）
+    tag = "占位帧 · 未接入文生图" if not st.note else st.note
     tw = draw.textlength(tag, font=f_small)
     _text_with_shadow(draw, (w - pad - tw, h - pad - int(h * 0.03)), tag, f_small, "#E8E8E8", align_right=True)
+
+
+def _paint_subtitle_text(draw: ImageDraw.ImageDraw, text: str, w: int, h: int,
+                         font=None) -> None:
+    """在底部安全区画字幕（最多两行），背景与标题层共用同一位置。"""
+    content = (text or "").strip()
+    if not content:
+        return
+    f_sub = font or load_font(int(h * 0.041))
+    sub_y = int(h * 0.845)
+    lines = _wrap_cn(content, 18)[:2]
+    for i, line in enumerate(lines):
+        tw = draw.textlength(line, font=f_sub)
+        x = (w - tw) / 2
+        y = sub_y + i * int(h * 0.055)
+        draw.rectangle(
+            [x - int(w * 0.012), y - int(h * 0.006),
+             x + tw + int(w * 0.012), y + int(h * 0.05)],
+            fill=(0, 0, 0, 90),
+        )
+        _text_with_shadow(draw, (x, y), line, f_sub, "#FFFFFF")
 
 
 def _text_with_shadow(draw: ImageDraw.ImageDraw, xy, text: str, font, color: str,

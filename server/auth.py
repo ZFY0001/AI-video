@@ -27,12 +27,15 @@ import secrets
 import sqlite3
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Any, Iterator
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from pipeline.config import ROOT
+
+from . import artifacts
 
 # ------------------------------------------------------------------ 存储
 DB_PATH = ROOT / "work" / "yiyan.db"
@@ -43,6 +46,40 @@ RUNS = ROOT / "runs"
 TOKEN_TTL = 7 * 24 * 3600
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]{2,}$")
+
+#: 访客凭据：浏览器本地生成的 32 位十六进制串。
+#: 它不是账号，也不换 token——只用来把"游客创建的项目"绑到这台浏览器上。
+#: 没有它，游客项目就是无主的，任何能访问本机服务的人都能读、能取消。
+_GUEST_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+class OwnershipUnavailable(RuntimeError):
+    """归属查询失败（数据库不可用等）。
+
+    调用方必须**拒绝访问**。把查询失败当成"没有归属记录"，就等于数据库一坏、
+    所有私有项目自动变成公开——这是最不该出现的失败方向。
+    """
+
+
+class OwnerConflict(RuntimeError):
+    """项目已有其他归属。任何创建路径都不该覆盖它。"""
+
+
+@dataclass(frozen=True)
+class Principal:
+    """请求主体：注册用户或匿名访客。"""
+
+    kind: str          # "user" | "guest"
+    id: int | str
+    user: dict[str, Any] | None = None
+
+    @property
+    def key(self) -> str:
+        return f"u:{self.id}" if self.kind == "user" else f"g:{self.id}"
+
+    @property
+    def user_id(self) -> int | None:
+        return int(self.id) if self.kind == "user" else None
 
 
 @contextmanager
@@ -82,33 +119,77 @@ def init_db() -> None:
                 created_at    TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS run_owners (
-                run_id  TEXT PRIMARY KEY,
-                user_id INTEGER NOT NULL,
-                created REAL NOT NULL
+                run_id    TEXT PRIMARY KEY,
+                user_id   INTEGER NOT NULL DEFAULT 0,
+                owner_key TEXT NOT NULL DEFAULT '',
+                created   REAL NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_run_owners_user ON run_owners(user_id);
             """
         )
+        # 老库没有 owner_key：补列并回填。旧记录都是注册用户的，回填成 u:<id>。
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(run_owners)")}
+        if "owner_key" not in columns:
+            conn.execute("ALTER TABLE run_owners ADD COLUMN owner_key TEXT NOT NULL DEFAULT ''")
+        conn.execute(
+            "UPDATE run_owners SET owner_key = 'u:' || user_id "
+            "WHERE owner_key = '' AND user_id > 0"
+        )
 
 
-def record_run_owner(run_id: str, user_id: int) -> None:
-    """记下这条 run 归谁。
+def record_owner(run_id: str, principal: Principal | None) -> None:
+    """记下这条 run 归谁。已有记录不覆盖。
 
-    为什么不在 `POST /runs` 里写：run_id 由管线在工作线程里生成，接口返回
-    job_id 的那一刻它还不存在。所以只能等结果出来再补写。
-
-    失败静默：归属丢了顶多让成片进不了"我的作品"，不该连累任务本身。
+    失败**不再静默**：抛 `OwnershipUnavailable`，由调用方决定是中止任务还是
+    在界面/日志里留痕。归属丢了，成片就成了"公共"的——静默失败等于悄悄降低
+    安全性。
     """
-    if not run_id or not user_id:
+    if not run_id or principal is None:
         return
+    key = principal.key
+    user_id = principal.user_id or 0
     try:
         with db() as conn:
+            row = conn.execute(
+                "SELECT owner_key, user_id FROM run_owners WHERE run_id = ?", (str(run_id),)
+            ).fetchone()
+            if row is not None:
+                existing = row["owner_key"] or (f"u:{row['user_id']}" if row["user_id"] else "")
+                if existing and existing != key:
+                    raise OwnerConflict(f"{run_id} 已归属其他账号")
+                return
             conn.execute(
-                "INSERT OR REPLACE INTO run_owners(run_id, user_id, created) VALUES (?,?,?)",
-                (str(run_id), int(user_id), time.time()),
+                "INSERT INTO run_owners(run_id, user_id, owner_key, created) VALUES (?,?,?,?)",
+                (str(run_id), user_id, key, time.time()),
             )
-    except Exception:  # noqa: BLE001
-        pass
+    except OwnerConflict:
+        raise
+    except sqlite3.IntegrityError as exc:
+        # 并发首次登记：另一个请求刚好插进去了。按现有归属判定，而不是报故障。
+        existing = run_owner_key(run_id)
+        if existing == key:
+            return
+        raise OwnerConflict(f"{run_id} 已被其他主体登记") from exc
+    except sqlite3.Error as exc:
+        raise OwnershipUnavailable(f"归属写入失败：{exc}") from exc
+
+
+def run_owner_key(run_id: str) -> str | None:
+    """读归属键。None = 没有记录（账号体系上线前的旧项目）。
+
+    数据库故障抛 `OwnershipUnavailable`，绝不返回 None——否则故障状态下所有
+    私有项目都会被判成公共。
+    """
+    try:
+        with db() as conn:
+            row = conn.execute(
+                "SELECT owner_key, user_id FROM run_owners WHERE run_id = ?", (str(run_id),)
+            ).fetchone()
+    except sqlite3.Error as exc:
+        raise OwnershipUnavailable(f"归属查询失败：{exc}") from exc
+    if row is None:
+        return None
+    return row["owner_key"] or (f"u:{row['user_id']}" if row["user_id"] else None)
 
 
 # ------------------------------------------------------------------ 密码
@@ -229,32 +310,62 @@ def require_user(user: dict[str, Any] | None = Depends(optional_user)) -> dict[s
     return user
 
 
-def optional_user_media(
-    authorization: str | None = Header(default=None),
-    token: str | None = Query(default=None),
-) -> dict[str, Any] | None:
-    """媒体地址专用：`<img src>` / `<video src>` **带不了请求头**。
+def _user_principal(user_id: int) -> Principal | None:
+    with db() as conn:
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    return Principal("user", int(row["id"]), public_user(row)) if row else None
 
-    封面和成片是浏览器自己发起的 GET，前端的 `apiFetch` 管不到它们——只认
-    Authorization 头的话，登录用户看自己作品的封面照样 404，而列表却是正常的，
-    排查起来非常费劲（表现为"有的卡片没封面"）。
 
-    所以这两类接口额外接受 `?token=`。本地单机工具，token 本来也只存在本机
-    localStorage 里，进 URL 的风险等同于进磁盘。
+def _resolve_principal(authorization: str | None, guest_id: str | None) -> Principal | None:
+    """账号优先；没有账号时才退到访客凭据。
+
+    两者都存在时只认账号，避免"登录后还用着切号前的游客项目"这种越权路径。
     """
     if authorization and authorization.lower().startswith("bearer "):
         user_id = decode_token(authorization.split(" ", 1)[1].strip())
         if user_id is not None:
-            with db() as conn:
-                row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-            return public_user(row) if row else None
+            return _user_principal(user_id)
+    guest = (guest_id or "").strip().lower()
+    if guest and _GUEST_RE.match(guest):
+        return Principal("guest", guest)
+    return None
+
+
+def optional_principal(
+    authorization: str | None = Header(default=None),
+    x_guest_id: str | None = Header(default=None),
+) -> Principal | None:
+    """可选主体：注册用户或访客。都缺时返回 None。"""
+    return _resolve_principal(authorization, x_guest_id)
+
+
+def require_principal(
+    principal: Principal | None = Depends(optional_principal),
+) -> Principal:
+    """创建入口用：新项目必须有归属主体，否则只能生成一份"公共"数据。"""
+    if principal is None:
+        raise HTTPException(status_code=401, detail="缺少访客凭据，请刷新页面后重试")
+    return principal
+
+
+def optional_principal_media(
+    authorization: str | None = Header(default=None),
+    token: str | None = Query(default=None),
+    guest: str | None = Query(default=None),
+) -> Principal | None:
+    """媒体/SSE 专用主体解析：`<img>` / `<video>` / `EventSource` 带不了请求头。
+
+    与 `optional_user_media` 同样接受 `?token=`，额外接受 `?guest=`。
+    """
+    if authorization and authorization.lower().startswith("bearer "):
+        user_id = decode_token(authorization.split(" ", 1)[1].strip())
+        if user_id is not None:
+            return _user_principal(user_id)
     if token:
         user_id = decode_token(token.strip())
         if user_id is not None:
-            with db() as conn:
-                row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-            return public_user(row) if row else None
-    return None
+            return _user_principal(user_id)
+    return _resolve_principal(None, guest)
 
 
 # ------------------------------------------------------------------ 请求体
@@ -375,8 +486,8 @@ def stats(user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
                 duration += float(project.get("total_duration") or 0)
             except Exception:  # noqa: BLE001
                 pass
-        video = path / "output" / "final.mp4"
-        if video.is_file():
+        video = artifacts.current_video(path)
+        if video is not None:
             try:
                 size_mb += video.stat().st_size / 1048576
             except OSError:
